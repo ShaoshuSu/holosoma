@@ -137,7 +137,15 @@ class MotionLoader:
         """Loads the motion from the csv file."""
         if self.motion_file.endswith(".npz"):
             data = np.load(self.motion_file)
-            self.input_fps = round(1 / data.get("fps", 1 / self.input_fps))
+            # "fps" holds a frame rate in Hz, matching every other producer/consumer of these
+            # npz files. Absent key falls back to --input_fps.
+            if "fps" in data:
+                self.input_fps = round(float(np.asarray(data["fps"]).reshape(-1)[0]))
+            if self.input_fps <= 0:
+                raise ValueError(
+                    f"Invalid input fps {self.input_fps} for motion file '{self.motion_file}': "
+                    "the npz 'fps' field must hold a positive frame rate in Hz."
+                )
             self.input_dt = 1.0 / self.input_fps
             motion = torch.from_numpy(data["qpos"]).to(torch.float32)
         else:
