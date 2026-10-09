@@ -4,13 +4,15 @@ import numpy as np
 
 from holosoma.config_types.env import EnvConfig
 from holosoma.config_types.full_sim import FullSimConfig
+from holosoma.config_types.reward import MultiAgentRewardManagerCfg
 from holosoma.managers.action import ActionManager
+from holosoma.managers.camera import CameraManager
 from holosoma.managers.command import CommandManager
 from holosoma.managers.curriculum import CurriculumManager
 from holosoma.managers.observation import ObservationManager
 from holosoma.managers.randomization import RandomizationManager
 from holosoma.managers.reset_events.manager import ResetEventManager
-from holosoma.managers.reward import RewardManager
+from holosoma.managers.reward import MultiAgentRewardManager, RewardManager
 from holosoma.managers.termination import TerminationManager
 from holosoma.managers.terrain import TerrainManager
 from holosoma.simulator.base_simulator.base_simulator import BaseSimulator
@@ -112,9 +114,11 @@ class BaseTask:
         self.dr_episode_count = torch.zeros(self.num_envs, dtype=torch.long, device="cpu")
 
         self.terrain_manager = TerrainManager(terrain_config, self, device)
+        self.camera_manager = CameraManager(tyro_config.camera, self, device)
         self.simulator: BaseSimulator = SimulatorClass(
             tyro_config=full_sim_config, terrain_manager=self.terrain_manager, device=device
         )
+        self.simulator.camera_manager = self.camera_manager
 
         self.headless = self.training_config.headless
         self.simulator.set_headless(self.headless)
@@ -155,7 +159,10 @@ class BaseTask:
         # Initialize remaining managers
         self.observation_manager = ObservationManager(observation_config, self, self.device)
         self.action_manager = ActionManager(action_config, self, self.device)
-        self.reward_manager = RewardManager(reward_config, self, self.device)
+        if isinstance(reward_config, MultiAgentRewardManagerCfg):
+            self.reward_manager = MultiAgentRewardManager(reward_config, self, self.device)
+        else:
+            self.reward_manager = RewardManager(reward_config, self, self.device)
         self.termination_manager = TerminationManager(termination_config, self, self.device)
         # For IsaacSim, initialize randomization_manager now
         if not is_isaacgym_manager:
@@ -184,6 +191,8 @@ class BaseTask:
             self.curriculum_manager.setup()
         if self.terrain_manager is not None:
             self.terrain_manager.setup()
+        if self.camera_manager is not None:
+            self.camera_manager.setup()
 
         # Initialize reset manager from simulator config
         self.reset_manager = ResetEventManager(
@@ -499,6 +508,8 @@ class BaseTask:
         if not self._update_tasks_before_termination:
             self._update_tasks_callback()
 
+        self._render_cameras()
+
         self._compute_observations()
 
         if env_ids.numel() > 0 and final_obs_dict:
@@ -566,6 +577,10 @@ class BaseTask:
         self.rew_buf[:] = self.reward_manager.compute(self.dt)
         self.episode_sums = getattr(self.reward_manager, "episode_sums", {})
         self.episode_sums_raw = getattr(self.reward_manager, "episode_sums_raw", {})
+        if isinstance(self.reward_manager, MultiAgentRewardManager):
+            ma_keys = self.reward_manager.cfg.multi_agent_body_keys
+            if ma_keys is not None:
+                self.extras["rewards_ma"] = {k: self.reward_manager.last_multi_agent_rewards[k] for k in ma_keys}
 
     def _compute_observations(self):
         self.obs_buf_dict = self.observation_manager.compute()
@@ -595,8 +610,21 @@ class BaseTask:
         self.time_out_buf |= timeout_flags
         self.reset_buf |= self.time_out_buf
 
-    def _pre_compute_observations_callback(self):
-        """Hook invoked after physics but before observation terms compute (no-op by default)."""
+    def _render_cameras(self):
+        """Update and conditionally capture cameras.
+
+        Called every environment step after resets and before observations.
+        Override in subclasses to add post-processing (e.g. depth normalization,
+        noise, delay buffers).
+        """
+        if self.camera_manager is not None:
+            self.camera_manager.render_cameras()
+
+    def _pre_compute_observations_callback(self, env_ids=None):
+        """Hook invoked after physics but before observation terms compute (no-op by default).
+
+        ``env_ids`` restricts the refresh to those envs (``None``: all envs).
+        """
         return
 
     def _post_compute_observations_callback(self):

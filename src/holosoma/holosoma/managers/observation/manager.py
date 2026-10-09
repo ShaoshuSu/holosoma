@@ -46,6 +46,13 @@ class ObservationManager:
         # History buffers: group_name -> term_name -> deque
         self._history_buffers: dict[str, dict[str, deque]] = {}
 
+        # FALCON-style frame buffers, used only by groups with ``interval > 1`` or
+        # ``reset_history_on_env_reset=False``: group_name -> term_name ->
+        # ``[num_envs, history_length, term_dim]`` (zero-initialised, allocated lazily),
+        # plus a per-env step counter per group.
+        self._frame_buffers: dict[str, dict[str, torch.Tensor]] = {}
+        self._interval_counters: dict[str, torch.Tensor] = {}
+
         # Initialize groups
         self._initialize_groups()
 
@@ -72,9 +79,24 @@ class ObservationManager:
                     self._term_funcs[group_name][term_name] = func
 
                 # Initialize history buffer if needed (using group-level history_length)
+                if self._uses_frame_buffer(group_cfg):
+                    continue
                 if group_cfg.history_length > 1:
                     self._history_buffers[group_name][term_name] = deque(maxlen=group_cfg.history_length)
 
+            if self._uses_frame_buffer(group_cfg):
+                if group_cfg.interval < 1:
+                    raise ValueError(
+                        f"Observation group '{group_name}' has interval={group_cfg.interval}; must be >= 1"
+                    )
+                self._frame_buffers[group_name] = {}
+                self._interval_counters[group_name] = torch.zeros(
+                    self.env.num_envs, dtype=torch.long, device=self.device
+                )
+
+    @staticmethod
+    def _uses_frame_buffer(group_cfg: ObsGroupCfg) -> bool:
+        return group_cfg.interval != 1 or not group_cfg.reset_history_on_env_reset
     @staticmethod
     def _accepts_modify_history(instance: ObservationTermBase) -> bool:
         """Whether a stateful term opts into manager-controlled history reads."""
@@ -126,6 +148,7 @@ class ObservationManager:
         """
         group_cfg = self.cfg.groups[group_name]
         obs_tensors = {}
+        interval_counters = getattr(self, "_interval_counters", {})
 
         for term_name, term_cfg in group_cfg.terms.items():
             # 1. Compute base observation
@@ -151,16 +174,35 @@ class ObservationManager:
                 obs = obs.clip(term_cfg.clip[0], term_cfg.clip[1])
 
             # 5. Handle history buffering
-            if group_cfg.history_length > 1:
+            # NOTE: history is configured at the group level but the buffers are kept
+            # per term. When history is active each term becomes a 3D tensor
+            # ``[num_envs, history_length, term_dim]``; the group flattens it below in
+            # term-major (default) or time-major order (``history_time_major``).
+            if group_name in interval_counters:
+                obs = self._apply_frame_buffer(group_name, term_name, obs, group_cfg, modify_buffer=modify_history)
+            elif group_cfg.history_length > 1:
                 obs = self._apply_history(group_name, term_name, obs, group_cfg, modify_buffer=modify_history)
 
             obs_tensors[term_name] = obs
+
+        # FALCON advances the interval counter on every step, pushed or not.
+        if modify_history and group_name in interval_counters:
+            interval_counters[group_name] += 1
 
         # Concatenate or return dict
         if group_cfg.concatenate:
             # Concatenate in alphabetically sorted order (to match direct system behavior)
             # Direct system does: sorted(obs_config) before concatenation
             sorted_keys = sorted(obs_tensors.keys())
+            if group_cfg.history_length > 1:
+                # Each term is ``[num_envs, history_length, term_dim]``.
+                if group_cfg.history_time_major:
+                    # Concatenate terms along the feature dimension, then flatten in TIME-MAJOR
+                    # order: ``[term_a_{t-N}, term_b_{t-N}, ..., term_a_{t}, term_b_{t}, ...]``.
+                    stacked = torch.cat([obs_tensors[key] for key in sorted_keys], dim=-1)
+                    return stacked.reshape(stacked.shape[0], -1)
+                # TERM-MAJOR order: ``[term_a_{t-N..t}, term_b_{t-N..t}, ...]``.
+                return torch.cat([obs_tensors[key].reshape(obs_tensors[key].shape[0], -1) for key in sorted_keys], dim=-1)
             for key in sorted_keys:
                 if obs_tensors[key].ndim != 2:
                     raise ValueError(
@@ -169,6 +211,9 @@ class ObservationManager:
                         f"(e.g. camera_rgb/camera_depth) belong only in a concatenate=False (dict) group."
                     )
             return torch.cat([obs_tensors[key] for key in sorted_keys], dim=-1)
+        # Non-concatenated group: flatten any per-term history to 2D ``[num_envs, history_length * term_dim]``.
+        if group_cfg.history_length > 1:
+            return {key: value.reshape(value.shape[0], -1) for key, value in obs_tensors.items()}
         return obs_tensors
 
     def _compute_term(
@@ -276,7 +321,9 @@ class ObservationManager:
         Returns
         -------
         torch.Tensor
-            Historical observations with shape ``[num_envs, obs_dim * history_length]``.
+            Historical observations with shape ``[num_envs, history_length, obs_dim]``.
+            The caller flattens this in time-major order at the group level (oldest
+            timestep first), matching FAR-FALCON-Terrains.
         """
         buffer = self._history_buffers[group_name][term_name]
 
@@ -298,11 +345,38 @@ class ObservationManager:
             padding = [torch.zeros(self.env.num_envs, obs_dim, device=self.device) for _ in range(num_missing)]
             history = padding + history
 
-        # Stack along time dimension: [num_envs, history_length, obs_dim]
-        stacked = torch.stack(history, dim=1)
+        # Stack along time dimension: [num_envs, history_length, obs_dim].
+        # Flattening is deferred to compute_group so terms can be interleaved
+        # per-timestep (time-major) rather than grouped per-term.
+        return torch.stack(history, dim=1)
 
-        # Flatten to [num_envs, history_length * obs_dim]
-        return stacked.reshape(self.env.num_envs, -1)
+    def _apply_frame_buffer(
+        self, group_name: str, term_name: str, obs: torch.Tensor, group_cfg: ObsGroupCfg, *, modify_buffer: bool = True
+    ) -> torch.Tensor:
+        """Interval-gated history buffer matching FAR-FALCON-Terrains ``_post_config_observation_callback``.
+
+        Envs whose counter satisfies ``counter % interval == 0`` shift their buffer
+        by one frame and append ``obs``; the others keep their previous frames.
+
+        Returns
+        -------
+        torch.Tensor
+            ``[num_envs, history_length, obs_dim]`` when ``history_length > 1``,
+            otherwise ``[num_envs, obs_dim]``.
+        """
+        buffer = self._frame_buffers[group_name].get(term_name)
+        if buffer is None:
+            buffer = torch.zeros(
+                obs.shape[0], group_cfg.history_length, obs.shape[1], device=obs.device, dtype=obs.dtype
+            )
+        push = (self._interval_counters[group_name] % group_cfg.interval) == 0
+        pushed = torch.cat([buffer[:, 1:], obs.unsqueeze(1)], dim=1)
+        buffer = torch.where(push[:, None, None], pushed, buffer)
+        if modify_buffer:
+            self._frame_buffers[group_name][term_name] = buffer
+        if group_cfg.history_length > 1:
+            return buffer
+        return buffer[:, 0]
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         """Reset observation history and stateful terms.
@@ -331,6 +405,19 @@ class ObservationManager:
                         continue
                     for history in buffer:
                         history[env_ids_tensor] = 0.0
+
+        for group_name, counter in getattr(self, "_interval_counters", {}).items():
+            if env_ids_tensor is None:
+                counter.zero_()
+            else:
+                counter[env_ids_tensor] = 0
+            if not self.cfg.groups[group_name].reset_history_on_env_reset:
+                continue
+            for frames in self._frame_buffers[group_name].values():
+                if env_ids_tensor is None:
+                    frames.zero_()
+                else:
+                    frames[env_ids_tensor] = 0.0
 
         # Reset stateful term instances
         for group_instances in self._term_instances.values():

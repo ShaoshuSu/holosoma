@@ -6,6 +6,7 @@ from pydantic import model_validator
 from pydantic.dataclasses import dataclass
 
 from holosoma.config_types.scene import PhysicsConfig
+from holosoma.config_types.motion import MotionLibConfig
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,8 @@ class RobotAssetConfig:
     fix_base_link: bool
     mesh_root: str | None = None
     disable_gravity: bool | None = None
+    left_foot_mesh: str = "left_ankle_roll_link"
+    right_foot_mesh: str = "right_ankle_roll_link"
 
     link_physics: PhysicsConfig | None = None
     """Shared physics applied to all robot links (``body_names='.*'``) via the same ``PhysicsConfig``
@@ -159,6 +162,9 @@ class RobotConfig:
     control: RobotControlConfig
     asset: RobotAssetConfig
 
+    motion: MotionLibConfig | None = None
+    """Optional motion library (e.g. upper-body reference clips for loco-manipulation)."""
+
     bridge: RobotBridgeConfig = field(default_factory=RobotBridgeConfig)
     """Bridge SDK configuration for this robot."""
 
@@ -178,5 +184,23 @@ class RobotConfig:
     knee_joint_min_threshold: float = 0.2
     lidar_height_offset: float = 0.5
 
+    # Foot footprint sample offsets in the body (yaw-rotating) frame, used by
+    # ``penalty_feet_edge`` to check whether any of four points around each
+    # foot lies on a terrain edge. Mirrors FAR-FALCON's
+    # ``feet_{front,back,left,right}_offset_in_body`` knobs.
+    feet_front_offset_in_body: list[float] = field(default_factory=lambda: [0.025, 0.0, 0.0])
+    feet_back_offset_in_body: list[float] = field(default_factory=lambda: [0.025, 0.0, 0.0])
+    feet_left_offset_in_body: list[float] = field(default_factory=lambda: [0.025, 0.05, 0.0])
+    feet_right_offset_in_body: list[float] = field(default_factory=lambda: [0.025, -0.05, 0.0])
+
     soft_dof_pos_limit: float = 0.95
     termination_close_to_dof_pos_limit: float = 0.98
+
+    lower_body_torque_penalty_dof_names: list[str] | None = None
+    """If set, :mod:`loco_manip` torque penalty sums only these DOFs; ``None`` means all ``lower_dof_names``."""
+
+    lower_body_vel_penalty_dof_names: list[str] | None = None
+    """If set, lower-body DOF-velocity penalty uses only these joints (RPL ``lower_body_vel_penalty_dof_names``)."""
+
+    lower_body_acc_penalty_dof_names: list[str] | None = None
+    """If set, lower-body DOF-acceleration penalty uses only these joints."""

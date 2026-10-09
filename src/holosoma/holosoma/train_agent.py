@@ -221,6 +221,16 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
         logger_cfg = tyro_config.logger
         wandb_enabled = logger_cfg.type == "wandb"
 
+        # In distributed training, let only rank 0 touch the shared video directory.
+        # Otherwise multiple ranks can try to encode/upload the same episode videos at once.
+        if is_distributed and not is_main_process:
+            logger_cfg = dataclasses.replace(
+                logger_cfg,
+                video=dataclasses.replace(logger_cfg.video, enabled=False, upload_to_wandb=False),
+                headless_recording=False,
+            )
+            tyro_config = dataclasses.replace(tyro_config, logger=logger_cfg)
+
         # Compute experiment directory from logger and training config
         from holosoma.utils.experiment_paths import get_experiment_dir, get_timestamp
 

@@ -191,7 +191,10 @@ class IsaacGym(BaseSimulator):
         sim_params.physx.max_gpu_contact_pairs = self.robot_config.contact_pairs_multiplier * 1024 * 1024
         sim_params.use_gpu_pipeline = True
 
-        gymutil.parse_sim_config(dataclasses.asdict(self.simulator_config.sim), sim_params)
+        sim_cfg = dataclasses.asdict(self.simulator_config.sim)
+        # Optional PhysX fields left as None keep the IsaacGym defaults.
+        sim_cfg["physx"] = {k: v for k, v in sim_cfg["physx"].items() if v is not None}
+        gymutil.parse_sim_config(sim_cfg, sim_params)
         return sim_params
 
     def get_supported_scene_formats(self) -> list[str]:
@@ -886,6 +889,7 @@ class IsaacGym(BaseSimulator):
     def draw_debug_viz(self):
         if self.virtual_gantry:
             self.virtual_gantry.draw_debug()
+        super().draw_debug_viz()
 
     def simulate_at_each_physics_step(self):
         if not hasattr(self, "step_counter"):
@@ -951,6 +955,8 @@ class IsaacGym(BaseSimulator):
         self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_L, "height_down")
         self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_I, "waist_yaw_up")
         self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_K, "waist_yaw_down")
+        self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_J, "waist_pitch_up")
+        self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_M, "waist_pitch_down")
         self.gym.subscribe_viewer_keyboard_event(self.viewer, gymapi.KEY_B, "vis_force_range")
 
         # Virtual gantry commands
@@ -1052,6 +1058,12 @@ class IsaacGym(BaseSimulator):
                 logger.info(f"Current Command: {self.commands[:,]}")
             elif evt.action == "waist_yaw_down" and evt.value > 0:
                 self.commands[:, 5] -= 0.1
+                logger.info(f"Current Command: {self.commands[:,]}")
+            elif evt.action == "waist_pitch_up" and evt.value > 0:
+                self.commands[:, 7] += 0.1
+                logger.info(f"Current Command: {self.commands[:,]}")
+            elif evt.action == "waist_pitch_down" and evt.value > 0:
+                self.commands[:, 7] -= 0.1
                 logger.info(f"Current Command: {self.commands[:,]}")
             elif evt.action == "vis_force_range" and evt.value > 0:
                 self.vis_force_range = 1 - self.vis_force_range

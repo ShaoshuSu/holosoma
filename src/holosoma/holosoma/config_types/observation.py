@@ -45,6 +45,29 @@ class ObsGroupCfg:
     history_length: int = 1
     """Number of timesteps to retain for history stacking (``1`` disables history)."""
 
+    interval: int = 1
+    """Push a new frame into the group only every ``interval`` env steps (per env).
+
+    Matches FAR-FALCON-Terrains ``obs.obs_intervals``: a frame is pushed when the
+    per-env counter satisfies ``counter % interval == 0`` and the counter then
+    always advances. The counter is zeroed on env reset, so the first step of an
+    episode always pushes. On the other steps the group returns its previous value.
+    """
+
+    reset_history_on_env_reset: bool = True
+    """Zero this group's history buffer for reset envs.
+
+    FAR-FALCON-Terrains never clears its observation buffers on reset (the
+    previous episode's frames shift out naturally); set ``False`` to match it.
+    """
+
+    history_time_major: bool = False
+    """Flatten history time-major (``[t-N: all terms, ..., t: all terms]``) instead of term-major.
+
+    Only affects concatenated groups with ``history_length > 1``. FAR-FALCON-Terrains / RPL
+    policies use time-major order.
+    """
+
 
 @dataclass(frozen=True)
 class ObservationManagerCfg:

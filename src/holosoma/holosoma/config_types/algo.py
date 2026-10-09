@@ -69,6 +69,80 @@ class LayerConfig:
     module_input_name: tuple[str, ...] = ()
     """Input names for module. Only used for encoder modules."""
 
+    # --- VisionTransformerEncoder fields ---
+
+    embed_dim: int = 64
+    """Embedding dimension for VisionTransformerEncoder."""
+
+    num_heads: int = 4
+    """Number of attention heads."""
+
+    num_blocks: int = 1
+    """Number of transformer blocks."""
+
+    attention_type: str = "cross"
+    """Attention type: 'self' or 'cross'."""
+
+    use_ffn: bool = True
+    """Whether to use feed-forward network in transformer blocks."""
+
+    ffn_hidden_dim: int | None = None
+    """Hidden dimension for FFN. None defaults to embed_dim * 4."""
+
+    use_pos_encoding: bool = True
+    """Whether to use learnable positional encodings."""
+
+    use_final_ln: bool = False
+    """Whether to apply final layer norm after transformer blocks."""
+
+    aggregation_method: str = "last"
+    """History aggregation: 'last', 'mean', 'max', or 'attention'."""
+
+    # --- Multi-camera & vision mask fields ---
+
+    num_cameras: int = 1
+    """Number of camera views. >1 creates per-camera CNN branches."""
+
+    use_vision_mask: bool = False
+    """Enable velocity-conditioned masking of per-camera features."""
+
+    vision_mask_input_name: str = ""
+    """Observation key providing the velocity command for vision masking (e.g. 'command_lin_vel_obs')."""
+
+    vision_mask_k: float = 4.0
+    """Sigmoid steepness for vision mask."""
+
+    vision_mask_v_th: float = 0.05
+    """Velocity threshold for vision mask."""
+
+    vision_mask_hard_cutoff: float = 0.0
+    """Zero out camera scales below this value (0 = disabled)."""
+
+    vision_tokens: str = "spatial"
+    """Token layout of the multi-camera CNN tokeniser fed to the VisionTransformerEncoder.
+
+    ``"spatial"``: one token per spatial cell (per camera), features = CNN output channels.
+    ``"channel"``: one token per CNN output channel, features = spatial cells of all cameras
+    concatenated (FAR-FALCON-Terrains layout; vision pos-encoding is ``[1, C_out, D]``).
+    """
+
+    independent_camera_init: bool = False
+    """Initialise each camera's CNN branch independently (FAR-FALCON-Terrains).
+
+    ``False`` deep-copies the first branch, so all cameras start from identical weights.
+    """
+
+    # --- Terrain MoE fields ---
+
+    terrain_proportions: List[float] = field(default_factory=list)
+    """Per-terrain-type proportions used to select which experts to instantiate in a MoE actor.
+    Only terrain indices with a strictly positive proportion become experts.
+    Used only by ``MoE*`` module types."""
+
+    terrain_types: List[str] = field(default_factory=list)
+    """Human-readable terrain type names indexed alongside ``terrain_proportions``.
+    Used for loading per-terrain expert checkpoints and per-terrain loss logging."""
+
 
 @dataclass(frozen=True)
 class ModuleConfig:
@@ -86,12 +160,6 @@ class ModuleConfig:
     layer_config: LayerConfig = field(default_factory=LayerConfig)
     """Layer configuration settings."""
 
-    min_noise_std: float | None = None
-    """Minimum noise standard deviation."""
-
-    min_mean_noise_std: float | None = None
-    """Minimum mean noise standard deviation."""
-
 
 @dataclass(frozen=True)
 class PPOModuleDictConfig:
@@ -102,6 +170,73 @@ class PPOModuleDictConfig:
 
     critic: ModuleConfig
     """Critic module configuration."""
+
+
+@dataclass(frozen=True)
+class PPOMultiModuleDictConfig:
+    """Separate actor-critic MLPs for lower and upper body (decoupled PPO)."""
+
+    actor_lower_body: ModuleConfig
+    critic_lower_body: ModuleConfig
+    actor_upper_body: ModuleConfig
+    critic_upper_body: ModuleConfig
+
+
+@dataclass(frozen=True)
+class DAggerModuleDictConfig:
+    """Student + teacher actor pair for single-actor DAgger."""
+
+    actor: ModuleConfig
+    actor_teacher: ModuleConfig
+    actor_encoder_teacher: ModuleConfig | None = None
+    critic: ModuleConfig | None = None
+
+
+@dataclass(frozen=True)
+class DAggerMAModuleDictConfig:
+    """Student + teacher actor pair per body for decoupled DAgger."""
+
+    actor_lower_body: ModuleConfig
+    actor_teacher_lower_body: ModuleConfig
+    actor_upper_body: ModuleConfig
+    actor_teacher_upper_body: ModuleConfig
+    actor_encoder_teacher_lower_body: ModuleConfig | None = None
+    actor_encoder_teacher_upper_body: ModuleConfig | None = None
+    critic_lower_body: ModuleConfig | None = None
+    critic_upper_body: ModuleConfig | None = None
+
+
+@dataclass(frozen=True)
+class WarmupParams:
+    """Warmup scheduler parameters."""
+
+    warmup_steps: int = 100
+    warmup_start_factor: float = 1e-3
+    warmup_end_factor: float = 1.0
+
+
+@dataclass(frozen=True)
+class BodyPartFloatConfig:
+    """Per-body-part floating-point value."""
+
+    lower_body: float = 0.0
+    upper_body: float = 0.0
+
+
+@dataclass(frozen=True)
+class BodyPartBoolConfig:
+    """Per-body-part boolean value."""
+
+    lower_body: bool = False
+    upper_body: bool = False
+
+
+@dataclass(frozen=True)
+class BodyPartLossTypeConfig:
+    """Per-body-part loss type selection."""
+
+    lower_body: str = "mse"
+    upper_body: str = "mse"
 
 
 @dataclass(frozen=True)
@@ -190,6 +325,50 @@ class PPOConfig:
     min_actor_learning_rate: float | None = None
     max_critic_learning_rate: float | None = None
     min_critic_learning_rate: float | None = None
+
+    log_raw_episode: bool = True
+    """Log unscaled per-term rewards (``raw_rew_*``) to console and TensorBoard."""
+
+
+@dataclass(frozen=True)
+class PPOMAConfig:
+    """PPO with two Gaussian policies (lower / upper) and two value heads (RPL ``ppo_ma`` style)."""
+
+    module_dict: PPOMultiModuleDictConfig
+    body_keys: tuple[str, ...] = ("lower_body", "upper_body")
+    init_noise_std_lower_body: float = 0.8
+    init_noise_std_upper_body: float = 0.8
+
+    num_learning_epochs: int = 8
+    num_mini_batches: int = 4
+    clip_param: float = 0.2
+    gamma: float = 0.99
+    lam: float = 0.95
+    value_loss_coef: float = 1.0
+    entropy_coef: float = 0.01
+    actor_learning_rate: float = 1e-5
+    actor_optimizer: OptimizerConfig = field(default_factory=lambda: OptimizerConfig(_target_="torch.optim.AdamW"))
+    critic_learning_rate: float = 1e-5
+    critic_optimizer: OptimizerConfig = field(default_factory=lambda: OptimizerConfig(_target_="torch.optim.AdamW"))
+    max_grad_norm: float = 1.0
+    schedule: str = "adaptive"
+    desired_kl: float = 0.01
+    use_symmetry: bool = False
+    symmetry_actor_coef: float = 1.0
+    symmetry_critic_coef: float = 0.0
+    num_steps_per_env: int = 24
+    save_interval: int = 100
+    load_optimizer: bool = True
+    num_learning_iterations: int = 1000000
+    init_at_random_ep_len: bool = True
+    eval_callbacks: Any = None
+    max_actor_learning_rate: float | None = None
+    min_actor_learning_rate: float | None = None
+    max_critic_learning_rate: float | None = None
+    min_critic_learning_rate: float | None = None
+
+    log_raw_episode: bool = True
+    """Log unscaled per-term rewards (``raw_rew_*``) to console and TensorBoard."""
 
 
 @dataclass(frozen=True)
@@ -296,6 +475,9 @@ class FastSACConfig:
     logging_interval: int = 100
     """the interval to log the metrics"""
 
+    log_raw_episode: bool = True
+    """Log unscaled per-term rewards (``raw_rew_*``) to console and TensorBoard."""
+
     encoder_obs_key: str = "perception_obs"
     """the key of the encoder observation. only valid if use_cnn_encoder is True"""
 
@@ -324,6 +506,15 @@ class PPOAlgoConfig:
 
     config: PPOConfig
     """Algorithm-specific configuration."""
+
+
+@dataclass(frozen=True)
+class PPOMAAlgoConfig:
+    """Decoupled two-policy PPO (lower + upper body)."""
+
+    _target_: str
+    _recursive_: bool
+    config: PPOMAConfig
 
 
 @dataclass(frozen=True)
@@ -527,6 +718,188 @@ class DistillationAlgoConfig:
     config: DistillationConfig
 
 
-AlgoInitConfig = Union[PPOConfig, FastSACConfig, DistillationPPOConfig, DistillationConfig]
+@dataclass(frozen=True)
+class DAggerConfig:
+    """Single-actor DAgger: one student distilled from one teacher."""
 
-AlgoConfig = Union[PPOAlgoConfig, FastSACAlgoConfig, DistillationPPOAlgoConfig, DistillationAlgoConfig]
+    module_dict: DAggerModuleDictConfig
+
+    # Training schedule
+    num_learning_iterations: int = 5000
+    num_learning_epochs: int = 5
+    num_mini_batches: int = 4
+    num_steps_per_env: int = 24
+    save_interval: int = 100
+    init_at_random_ep_len: bool = True
+
+    # Actor optimization
+    actor_learning_rate: float = 1e-4
+    actor_optimizer: OptimizerConfig = field(
+        default_factory=lambda: OptimizerConfig(_target_="torch.optim.AdamW", weight_decay=0.01)
+    )
+    max_grad_norm: float = 1.0
+    bc_loss_coef: float = 1.0
+    init_noise_std: float = 0.8
+
+    # Loss type ("l1_norm", "l2_norm", "mse", "mae", "bce")
+    loss_type: str = "mse"
+
+    # Encoder-distillation loss (optional)
+    use_encoder_loss: bool = False
+    encoder_loss_coef: float = 0.0
+
+    # LR scheduling
+    use_scheduler: bool = True
+    scheduler_type: str = "CosineAnnealingLR"
+    num_scheduler_iterations: int | None = None
+    scheduler_params: dict[str, Any] = field(default_factory=dict)
+
+    use_warmup: bool = True
+    warmup_params: WarmupParams = field(default_factory=WarmupParams)
+
+    # Checkpointing
+    ckpt_teacher: str | None = None
+    ckpt_encoder_teacher: str | None = None
+    load_optimizer: bool = True
+
+    eval_callbacks: Any = None
+    log_raw_episode: bool = True
+
+
+@dataclass(frozen=True)
+class DAggerAlgoConfig:
+    """Single-actor DAgger wrapper."""
+
+    _target_: str
+    _recursive_: bool
+    config: DAggerConfig
+
+
+@dataclass(frozen=True)
+class DAggerMAConfig:
+    """Decoupled DAgger: student/teacher actors for lower + upper body."""
+
+    module_dict: DAggerMAModuleDictConfig
+
+    body_keys: tuple[str, ...] = ("lower_body", "upper_body")
+
+    # Training schedule
+    num_learning_iterations: int = 5000
+    num_learning_epochs: int = 5
+    num_mini_batches: int = 4
+    num_steps_per_env: int = 24
+    save_interval: int = 100
+    init_at_random_ep_len: bool = True
+
+    # Actor optimization
+    actor_learning_rate: float = 1e-4
+    actor_optimizer: OptimizerConfig = field(
+        default_factory=lambda: OptimizerConfig(_target_="torch.optim.AdamW", weight_decay=0.01)
+    )
+    max_grad_norm: float = 1.0
+    bc_loss_coef: float = 1.0
+
+    # Initial exploration noise for the student actor.
+    init_noise_std_lower_body: float = 0.8
+    init_noise_std_upper_body: float = 0.6
+
+    # Loss selection ("l1_norm", "l2_norm", "mse", "mae", "bce")
+    loss_types: BodyPartLossTypeConfig = field(default_factory=BodyPartLossTypeConfig)
+
+    # Encoder-distillation loss (optional, per body part)
+    use_encoder_loss: BodyPartBoolConfig = field(default_factory=BodyPartBoolConfig)
+    encoder_loss_coef: BodyPartFloatConfig = field(default_factory=BodyPartFloatConfig)
+
+    # Optional critic head (pure DAgger defaults to False).
+    use_critic: bool = False
+    value_loss_coef: float = 1.0
+    gamma: float = 0.99
+    lam: float = 0.95
+    use_clipped_value_loss: bool = True
+    clip_param: float = 0.2
+    critic_learning_rate: float = 1e-5
+    critic_optimizer: OptimizerConfig = field(
+        default_factory=lambda: OptimizerConfig(_target_="torch.optim.AdamW", weight_decay=0.001)
+    )
+
+    # LR scheduling
+    use_scheduler: bool = True
+    scheduler_type: str = "CosineAnnealingLR"
+    num_scheduler_iterations: int | None = None
+    scheduler_params: dict[str, Any] = field(default_factory=dict)
+
+    use_warmup: bool = True
+    warmup_params: WarmupParams = field(default_factory=WarmupParams)
+
+    # Checkpointing
+    ckpt_teacher: str | None = None
+    ckpt_actor_module: str | None = None
+    ckpt_encoder_teacher: str | None = None
+    load_optimizer: bool = True
+
+    eval_callbacks: Any = None
+    log_raw_episode: bool = True
+
+
+@dataclass(frozen=True)
+class DAggerMAAlgoConfig:
+    """Decoupled DAgger wrapper."""
+
+    _target_: str
+    _recursive_: bool
+    config: DAggerMAConfig
+
+
+def _default_terrain_wandb_ckpts() -> dict[str, str]:
+    return {
+        "slopes": "",
+        "stairs_up": "",
+        "stairs_down": "",
+        "stepping_stones_columns": "",
+    }
+
+
+@dataclass(frozen=True)
+class DAggerMAMoEConfig(DAggerMAConfig):
+    """Decoupled DAgger with a terrain-routed MoE teacher."""
+
+    # Name of the observation that carries the terrain index per env.
+    route_obs_name: str = "terrain_idx_obs"
+
+    # Per-terrain-type W&B URIs for the MoE teacher experts. Keys are terrain
+    # names (matching ``module_dict.actor_teacher_lower_body.layer_config.terrain_types``)
+    # and values are full ``wandb://entity/project/run_id/model_xxx.pt`` URIs.
+    # Takes precedence over the directory layout used with ``ckpt_teacher``.
+    ckpt_teacher_wandb: dict[str, str] = field(default_factory=_default_terrain_wandb_ckpts)
+
+
+@dataclass(frozen=True)
+class DAggerMAMoEAlgoConfig:
+    """Decoupled DAgger with MoE teacher wrapper."""
+
+    _target_: str
+    _recursive_: bool
+    config: DAggerMAMoEConfig
+
+
+AlgoInitConfig = Union[
+    PPOConfig,
+    PPOMAConfig,
+    FastSACConfig,
+    DistillationPPOConfig,
+    DistillationConfig,
+    DAggerConfig,
+    DAggerMAConfig,
+    DAggerMAMoEConfig,
+]
+
+AlgoConfig = Union[
+    PPOAlgoConfig,
+    PPOMAAlgoConfig,
+    FastSACAlgoConfig,
+    DistillationPPOAlgoConfig,
+    DistillationAlgoConfig,
+    DAggerAlgoConfig,
+    DAggerMAAlgoConfig,
+    DAggerMAMoEAlgoConfig,
+]

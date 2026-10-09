@@ -265,16 +265,117 @@ class ActuatorRandomizerState(RandomizationTermBase):
         return self.rfi_lim_scale
 
 
+class HeightMeasurementXYOffsetRandomizer(RandomizationTermBase):
+    """Randomize the XY cell offset applied to height-scan samples.
+
+    Mirrors FAR-FALCON's ``randomize_height_measurements_xy_offset_points``
+    hook: each env is assigned an integer "number of heightfield cells" shift.
+    ``TerrainLocomotion.height_measurements`` then samples 5 XY positions per
+    scan point (center, +/- x*scale, +/- y*scale) and returns the min. The
+    policy must therefore tolerate small lateral misalignment between its
+    scan grid and the true terrain surface.
+
+    Config params:
+        enabled: Whether the randomizer is active.
+        height_measurements_xy_offset_points_range: [lo, hi] integer range
+            of cell offsets (inclusive). Typical values are ``[0, 1]``.
+        truncate_scaled_range: Scale the range by the DR-curriculum scale with
+            ``int()`` truncation like FAR-FALCON (``[0, 1]`` only turns on at scale
+            1.0) instead of ``round()`` (on above scale 0.5). Default False.
+    """
+
+    def __init__(self, cfg: Any, env: Any):
+        super().__init__(cfg, env)
+        params = cfg.params or {}
+        self.enabled: bool = bool(params.get("enabled", False))
+        rng = params.get("height_measurements_xy_offset_points_range", [0, 0])
+        self.range: list[int] = [int(rng[0]), int(rng[1])]
+        self._scale_range = int if params.get("truncate_scaled_range", False) else round
+        # Curriculum scale (updated externally by DomainRandScaleCurriculum).
+        self.scale: float = 1.0
+        self._offsets: torch.Tensor | None = None
+
+    def setup(self) -> None:
+        if not self.enabled:
+            return
+        self._offsets = torch.zeros(self.env.num_envs, device=self.env.device, dtype=torch.long)
+        self._resample(torch.arange(self.env.num_envs, device=self.env.device, dtype=torch.long))
+        self._push_to_terrain()
+
+    def reset(self, env_ids) -> None:
+        if not self.enabled or self._offsets is None:
+            return
+        idx = _ensure_env_ids_tensor(self.env, env_ids)
+        if idx.numel() == 0:
+            return
+        self._resample(idx)
+        self._push_to_terrain()
+
+    def step(self) -> None:
+        return
+
+    def set_curriculum_scale(self, scale: float) -> None:
+        """Scale the randomization range. Called by the DR curriculum each reset."""
+        self.scale = float(scale)
+
+    def _resample(self, env_ids: torch.Tensor) -> None:
+        if self._offsets is None:
+            return
+        lo = self._scale_range(self.range[0] * self.scale)
+        hi = self._scale_range(self.range[1] * self.scale)
+        hi = max(hi, lo)
+        if hi == lo:
+            self._offsets[env_ids] = lo
+            return
+        self._offsets[env_ids] = torch.randint(
+            lo,
+            hi + 1,
+            (env_ids.shape[0],),
+            device=self.env.device,
+            dtype=self._offsets.dtype,
+        )
+
+    def _push_to_terrain(self) -> None:
+        terrain = None
+        terrain_manager = getattr(self.env, "terrain_manager", None)
+        if terrain_manager is not None:
+            terrain = terrain_manager.get_state("locomotion_terrain")
+        if terrain is None or not hasattr(terrain, "set_measured_heights_xy_offset_points"):
+            return
+        terrain.set_measured_heights_xy_offset_points(self._offsets if self.enabled else None)
+
+
 def setup_action_delay_buffers(
-    env, sampler: TermSampler, *, ctrl_delay_step_range: Sequence[int], enabled: bool = True, **_
+    env,
+    sampler: TermSampler,
+    *,
+    ctrl_delay_step_range: Sequence[int],
+    enabled: bool = True,
+    upper_body_ctrl_delay: bool = False,
+    lower_body_ctrl_delay: bool = False,
+    **_,
 ) -> None:
     """Initialize action delay index buffer during setup.
 
     Note: The action_queue itself is managed by the action manager.
     This only sets up the delay index that determines which queued action to use.
+
+    ``upper_body_ctrl_delay`` / ``lower_body_ctrl_delay`` mirror FAR-FALCON's
+    flags of the same name: when either is set, only the joints in
+    ``robot_config.upper_dof_names`` / ``lower_dof_names`` get the delayed
+    action and the rest use the current one. Both False (default) delays every
+    joint.
     """
     env._randomize_ctrl_delay = bool(enabled)
     env._ctrl_delay_step_range = list(ctrl_delay_step_range)
+    delay_dof_names: list[str] | None = None
+    if upper_body_ctrl_delay or lower_body_ctrl_delay:
+        delay_dof_names = []
+        if lower_body_ctrl_delay:
+            delay_dof_names += list(env.robot_config.lower_dof_names)
+        if upper_body_ctrl_delay:
+            delay_dof_names += list(env.robot_config.upper_dof_names)
+    env._ctrl_delay_dof_names = delay_dof_names
 
     if not enabled:
         return
@@ -505,8 +606,11 @@ def randomize_action_delay(
     if hasattr(env.action_manager, "action_queue"):
         env.action_manager.action_queue[idx] *= 0.0
 
-    delay_low = int(env._ctrl_delay_step_range[0])
-    delay_high = int(env._ctrl_delay_step_range[1])
+    # Apply the DR curriculum scale (mirrors FALCON-Terrains:
+    # ``delay_low/high = int(ctrl_delay_step_range * domain_rand_scale)``); 1.0 without a curriculum.
+    scale = float(getattr(env, "domain_rand_scale", 1.0))
+    delay_low = int(env._ctrl_delay_step_range[0] * scale)
+    delay_high = int(env._ctrl_delay_step_range[1] * scale)
 
     # Keyed discrete delay index per env (reproducible per (term, env, episode)) -> [n_env].
     # Bounds ordering is validated inside draw_int (single source of truth).
@@ -683,6 +787,7 @@ def randomize_mass_startup(
     link_mass_range: DistributionLike = (1.0, 1.0),
     enable_base_mass: bool = True,
     added_mass_range: DistributionLike = (0.0, 0.0),
+    base_mass_body_name: str | None = None,
     enabled: bool = True,
     recompute_inertia: bool = True,
     **_,
@@ -691,6 +796,9 @@ def randomize_mass_startup(
 
     Note: link_mass_range uses SCALING (e.g., 0.9-1.2 = 90-120% of original),
           added_mass_range uses ADDITION (e.g., -1.0 to 3.0 kg offset).
+
+    ``base_mass_body_name`` selects the body receiving ``added_mass_range``
+    (default ``robot_config.torso_name``). FAR-FALCON adds it to ``pelvis``.
 
     ``recompute_inertia`` (default True): each body's inertia is rescaled by the SAME factor its mass
     changed by (``m_after / m_before``), identically on all backends (explicit multiplicative ratio —
@@ -725,7 +833,7 @@ def randomize_mass_startup(
     if simulator.get_simulator_type() == SimulatorType.ISAACGYM:
         gym = simulator.gym
         body_names = list(env.robot_config.randomize_link_body_names or [])
-        torso_name = env.robot_config.torso_name
+        torso_name = base_mass_body_name or env.robot_config.torso_name
         if idx.numel() > 0:
             sample_env = idx[0].item()
             sample_env_ptr = simulator.envs[sample_env]
@@ -825,7 +933,7 @@ def randomize_mass_startup(
             )
 
         if enable_base_mass:
-            asset_cfg = SceneEntityCfg("robot", body_names=[env.robot_config.torso_name])
+            asset_cfg = SceneEntityCfg("robot", body_names=[base_mass_body_name or env.robot_config.torso_name])
             asset_cfg.resolve(simulator.scene)  # Required to avoid applying randomization to all bodies
             randomize_rigid_body_mass(
                 simulator,
@@ -879,7 +987,7 @@ def randomize_mass_startup(
             )  # link-scale stream
         if enable_base_mass:
             _mass_write(
-                [env.robot_config.torso_name], added_mass_range, operation="add", axis_base=1
+                [base_mass_body_name or env.robot_config.torso_name], added_mass_range, operation="add", axis_base=1
             )  # base-add stream (distinct from link-scale)
 
     else:  # pragma: no cover - defensive

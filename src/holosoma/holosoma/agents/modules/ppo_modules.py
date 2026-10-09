@@ -29,8 +29,6 @@ class PPOActor(nn.Module):
         self.actor_module = BaseModule(obs_dim_dict, module_config_dict, history_length)
 
         self.std = nn.Parameter(init_noise_std * torch.ones(num_actions))
-        self.min_noise_std = module_config_dict.min_noise_std
-        self.min_mean_noise_std = module_config_dict.min_mean_noise_std
         self.distribution = None
         # disable args validation for speedup
         Normal.set_default_validate_args(False)
@@ -76,19 +74,8 @@ class PPOActor(nn.Module):
     def update_distribution(self, actor_obs):
         self.project_action_std()
         mean = self.actor(actor_obs)
-        if self.min_noise_std:
-            clamped_std = torch.clamp(self.std, min=self.min_noise_std)
-            self.distribution = Normal(mean, mean * 0.0 + clamped_std)
-        elif self.min_mean_noise_std:
-            current_mean = self.std.mean()
-            if current_mean < self.min_mean_noise_std:
-                scale_up = self.min_mean_noise_std / (current_mean + 1e-6)
-                clamped_std = self.std * scale_up
-            else:
-                clamped_std = self.std
-            self.distribution = Normal(mean, mean * 0.0 + clamped_std)
-        else:
-            self.distribution = Normal(mean, mean * 0.0 + self.std)
+        std = torch.clamp(self.std, min=1e-6)
+        self.distribution = Normal(mean, std)
 
     @torch.no_grad()
     def project_action_std(self) -> None:
@@ -137,8 +124,8 @@ class PPOCritic(nn.Module):
 
 
 class PPOActorEncoder(PPOActor):
-    def __init__(self, obs_dim_dict, module_config_dict, num_actions, init_noise_std):
-        super().__init__(obs_dim_dict, module_config_dict, num_actions, init_noise_std)
+    def __init__(self, obs_dim_dict, module_config_dict, num_actions, init_noise_std, history_length: dict[str, int]):
+        super().__init__(obs_dim_dict, module_config_dict, num_actions, init_noise_std, history_length)
         self.module_input_name = module_config_dict.layer_config.module_input_name
         self.encoder_input_name = module_config_dict.layer_config.encoder_input_name
 
@@ -170,8 +157,8 @@ class PPOActorEncoder(PPOActor):
 
 
 class PPOCriticEncoder(PPOCritic):
-    def __init__(self, obs_dim_dict, module_config_dict):
-        super().__init__(obs_dim_dict, module_config_dict)
+    def __init__(self, obs_dim_dict, module_config_dict, history_length: dict[str, int]):
+        super().__init__(obs_dim_dict, module_config_dict, history_length)
         self.module_input_name = module_config_dict.layer_config.module_input_name
         self.encoder_input_name = module_config_dict.layer_config.encoder_input_name
 
@@ -195,3 +182,61 @@ class PPOCriticEncoder(PPOCritic):
         critic_obs = policy_state_dict["critic_obs"]
         input_critic = self._get_input(critic_obs)
         return super().evaluate({"critic_obs": input_critic})
+
+
+class PPOActorVisionTransformerEncoder(PPOActorEncoder):
+
+    def __init__(self, obs_dim_dict, module_config_dict, num_actions, init_noise_std, history_length):
+        super().__init__(obs_dim_dict, module_config_dict, num_actions, init_noise_std, history_length)
+        self._vision_mask_input_name = getattr(self.actor_module, "vision_mask_input_name", "")
+
+    def _get_input(self, actor_obs: torch.Tensor) -> torch.Tensor:
+        if actor_obs.shape[-1] != self.actor_module.input_dim:
+            raise ValueError(f"Actor Obs must be {self.actor_module.input_dim}, got {actor_obs.shape[-1]}")
+        self.encoder_obs = actor_obs[..., self.actor_module.input_indices_dict[self.encoder_input_name]]
+        self.actor_state_obs = torch.cat(
+            [
+                actor_obs[..., self.actor_module.input_indices_dict[name]]
+                for name in self.module_input_name
+            ],
+            -1,
+        )
+
+        v_cmd = None
+        if self._vision_mask_input_name and self._vision_mask_input_name in self.actor_module.input_indices_dict:
+            v_cmd = actor_obs[..., self.actor_module.input_indices_dict[self._vision_mask_input_name]]
+
+        if self.actor_module.encoder is not None:
+            self.actor_encoder_obs = self.actor_module.encoder(self.encoder_obs, self.actor_state_obs, v_cmd=v_cmd)
+        else:
+            self.actor_encoder_obs = self.encoder_obs
+        return torch.cat((self.actor_encoder_obs, self.actor_state_obs), dim=-1)
+
+
+class PPOCriticVisionTransformerEncoder(PPOCriticEncoder):
+
+    def __init__(self, obs_dim_dict, module_config_dict, history_length):
+        super().__init__(obs_dim_dict, module_config_dict, history_length)
+        self._vision_mask_input_name = getattr(self.critic_module, "vision_mask_input_name", "")
+
+    def _get_input(self, critic_obs: torch.Tensor) -> torch.Tensor:
+        if critic_obs.shape[-1] != self.critic_module.input_dim:
+            raise ValueError(f"Critic Obs must be {self.critic_module.input_dim}, got {critic_obs.shape[-1]}")
+        self.encoder_obs = critic_obs[..., self.critic_module.input_indices_dict[self.encoder_input_name]]
+        self.critic_state_obs = torch.cat(
+            [
+                critic_obs[..., self.critic_module.input_indices_dict[name]]
+                for name in self.module_input_name
+            ],
+            -1,
+        )
+
+        v_cmd = None
+        if self._vision_mask_input_name and self._vision_mask_input_name in self.critic_module.input_indices_dict:
+            v_cmd = critic_obs[..., self.critic_module.input_indices_dict[self._vision_mask_input_name]]
+
+        if self.critic_module.encoder is not None:
+            self.critic_encoder_obs = self.critic_module.encoder(self.encoder_obs, self.critic_state_obs, v_cmd=v_cmd)
+        else:
+            self.critic_encoder_obs = self.encoder_obs
+        return torch.cat((self.critic_encoder_obs, self.critic_state_obs), dim=-1)

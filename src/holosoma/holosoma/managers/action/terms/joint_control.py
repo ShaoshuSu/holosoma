@@ -170,6 +170,8 @@ class JointPositionActionTerm(ActionTermBase):
 
         # Action delay queue will be initialized in setup() after randomization manager is ready
         self.action_queue: torch.Tensor | None = None
+        # Per-DOF mask of delayed joints (None = delay all joints).
+        self._ctrl_delay_dof_mask: torch.Tensor | None = None
 
     def setup(self) -> None:
         """Setup action term after all managers are initialized.
@@ -183,6 +185,15 @@ class JointPositionActionTerm(ActionTermBase):
         if getattr(self.env, "_randomize_ctrl_delay", False):
             max_delay = self.env._ctrl_delay_step_range[1]
             self.action_queue = torch.zeros(self.env.num_envs, max_delay + 1, self._action_dim, device=self.env.device)
+            delay_dof_names = getattr(self.env, "_ctrl_delay_dof_names", None)
+            if delay_dof_names is not None:
+                dof_names = list(self.env.dof_names)
+                missing = [n for n in delay_dof_names if n not in dof_names]
+                if missing:
+                    raise ValueError(f"ctrl delay DOF names not in robot dof_names: {missing}")
+                mask = torch.zeros(self._action_dim, dtype=torch.bool, device=self.env.device)
+                mask[[dof_names.index(n) for n in delay_dof_names]] = True
+                self._ctrl_delay_dof_mask = mask
 
         # Allocate sub-step torque history buffer
         decimation = self.env.simulator.simulator_config.sim.control_decimation_steps
@@ -244,10 +255,13 @@ class JointPositionActionTerm(ActionTermBase):
         self.action_queue[:, 1:] = self.action_queue[:, :-1].clone()
         self.action_queue[:, 0] = self._processed_actions.clone()
 
-        # Apply uniform delay
-        self._actions_after_delay[:] = self.action_queue[
-            torch.arange(self.env.num_envs), self.env.action_delay_idx
-        ].clone()
+        delayed = self.action_queue[torch.arange(self.env.num_envs), self.env.action_delay_idx]
+        if self._ctrl_delay_dof_mask is None:
+            # Apply uniform delay
+            self._actions_after_delay[:] = delayed
+        else:
+            # Delay only the selected joints (FAR-FALCON upper/lower_body_ctrl_delay)
+            self._actions_after_delay[:] = torch.where(self._ctrl_delay_dof_mask, delayed, self._processed_actions)
 
     def apply_actions(self) -> None:
         """Apply processed actions by computing and applying torques."""

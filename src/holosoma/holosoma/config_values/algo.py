@@ -1,4 +1,7 @@
 from holosoma.config_types.algo import (
+    DAggerAlgoConfig,
+    DAggerMAAlgoConfig,
+    DAggerMAMoEAlgoConfig,
     DistillationAlgoConfig,
     DistillationConfig,
     DistillationPPOAlgoConfig,
@@ -10,13 +13,23 @@ from holosoma.config_types.algo import (
     OptimizerConfig,
     PPOAlgoConfig,
     PPOConfig,
+    PPOMAAlgoConfig,
     PPOModuleDictConfig,
     StudentTeacherModuleConfig,
 )
 from holosoma.utils.config_registry import ConfigRegistry
 
 ALGO_REGISTRY = ConfigRegistry(
-    (PPOAlgoConfig, FastSACAlgoConfig, DistillationPPOAlgoConfig, DistillationAlgoConfig),
+    (
+        PPOAlgoConfig,
+        PPOMAAlgoConfig,
+        FastSACAlgoConfig,
+        DistillationPPOAlgoConfig,
+        DistillationAlgoConfig,
+        DAggerAlgoConfig,
+        DAggerMAAlgoConfig,
+        DAggerMAMoEAlgoConfig,
+    ),
     group="holosoma.config.algo",
 )
 

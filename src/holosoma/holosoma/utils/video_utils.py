@@ -208,7 +208,14 @@ def create_video(video_frames, fps, save_dir, output_format="mp4", wandb_logging
 
         # Step 3: Handle wandb upload if requested
         if wandb_logging and _is_wandb_available():
-            wandb.log({"Training rollout": wandb.Video(str(final_video), format="mp4")})
+            # Pin the video log to wandb's current step. Without this, logging a
+            # video without ``step=`` auto-advances wandb's internal step counter,
+            # causing subsequent ``wandb.log(..., step=it)`` calls from the trainer
+            # with smaller ``it`` to be silently dropped ("step N < current step M").
+            wandb.log(
+                {"Training rollout": wandb.Video(str(final_video), format="mp4")},
+                step=wandb.run.step,
+            )
 
         # Step 4: Cleanup temp files if needed
         if cleanup_files:

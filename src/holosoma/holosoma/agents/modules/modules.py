@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import copy
 import inspect
 
 import torch
 from torch import nn
 
+from holosoma.agents.modules.vision_transformer import VisionTransformerEncoder
 from holosoma.config_types.algo import LayerConfig, ModuleConfig
 
 
@@ -47,83 +49,202 @@ class ImgChLayerNorm(nn.Module):
         return self.weight[:, None, None] * x + self.bias[:, None, None]
 
 
+class CameraVisionMask(nn.Module):
+    """Velocity-conditioned scalar masking of per-camera features.
+
+    Supports 1, 2, or 4 cameras:
+      - 1 camera: pass-through (no masking)
+      - 2 cameras [front, back]: masked by forward/backward velocity
+      - 4 cameras [front, back, left, right]: also masked by lateral velocity
+    """
+
+    def __init__(
+        self,
+        num_cameras: int = 2,
+        k: float = 4.0,
+        v_th: float = 0.05,
+        hard_cutoff: float = 0.0,
+    ):
+        super().__init__()
+        self.num_cameras = num_cameras
+        self.k = k
+        self.v_th = v_th
+        self.hard_cutoff = hard_cutoff
+
+    def forward(
+        self,
+        camera_features: list[torch.Tensor],
+        v_cmd: torch.Tensor,
+    ) -> list[torch.Tensor]:
+        """
+        Parameters
+        ----------
+        camera_features : list[Tensor]
+            Per-camera tensors of shape ``[B, C_out, feat_dim]``.
+        v_cmd : Tensor
+            Velocity command ``[B, D]`` where ``D >= 1`` (or ``D >= 2`` for 4 cameras).
+
+        Returns
+        -------
+        list[Tensor]
+            Scaled camera features.
+        """
+        num_cams = len(camera_features)
+        if num_cams == 1:
+            return camera_features
+
+        v_x = v_cmd[:, 0:1]  # [B, 1]
+        scale_front = 1.0 - torch.sigmoid(self.k * (-v_x - self.v_th))
+        scale_back = 1.0 - torch.sigmoid(self.k * (v_x - self.v_th))
+
+        if self.hard_cutoff > 0:
+            scale_front = torch.where(scale_front < self.hard_cutoff, torch.zeros_like(scale_front), scale_front)
+            scale_back = torch.where(scale_back < self.hard_cutoff, torch.zeros_like(scale_back), scale_back)
+
+        scales: list[torch.Tensor] = [scale_front, scale_back]
+
+        if num_cams == 4:
+            v_y = v_cmd[:, 1:2]
+            scale_left = 1.0 - torch.sigmoid(self.k * (-v_y - self.v_th))
+            scale_right = 1.0 - torch.sigmoid(self.k * (v_y - self.v_th))
+            if self.hard_cutoff > 0:
+                scale_left = torch.where(scale_left < self.hard_cutoff, torch.zeros_like(scale_left), scale_left)
+                scale_right = torch.where(scale_right < self.hard_cutoff, torch.zeros_like(scale_right), scale_right)
+            scales.extend([scale_left, scale_right])
+
+        masked = []
+        for cam_idx, cam_feat in enumerate(camera_features):
+            if cam_idx < len(scales):
+                masked.append(cam_feat * scales[cam_idx].unsqueeze(-1))
+            else:
+                masked.append(cam_feat)
+        return masked
+
+
 class CNNWrapper(nn.Module):
-    """Wrapper module that handles reshaping for CNN layers when working with flattened inputs."""
+    """Wrapper module that handles reshaping for CNN layers when working with flattened inputs.
 
-    def __init__(self, cnn_layers, input_channels, input_height, input_width, flatten_output=True):
+    Supports single-camera and multi-camera modes.  In multi-camera mode each
+    camera gets its own CNN branch and outputs are concatenated along the
+    feature dimension.  An optional :class:`CameraVisionMask` can scale
+    per-camera features based on a velocity command before concatenation.
+    """
+
+    def __init__(
+        self,
+        cnn_layers,
+        input_channels,
+        input_height,
+        input_width,
+        flatten_output=True,
+        num_cameras: int = 1,
+        vision_mask: CameraVisionMask | None = None,
+        vision_tokens: str = "spatial",
+    ):
         """Initialize CNNWrapper module.
-
-        Wraps CNN layers to handle reshaping for CNN layers when working with flattened inputs.
-        For instance, this is useful when giving the flattened output of a CNN layer to an MLP layer.
 
         Parameters
         ----------
-        cnn_layers: nn.Module
-            CNN layers to wrap
+        cnn_layers: nn.Module or nn.ModuleList
+            CNN layers.  For multi-camera, pass an ``nn.ModuleList`` of per-camera CNNs.
         input_channels: int
-            Number of input channels
+            Number of input channels **per camera** (typically ``history_length``).
         input_height: int
-            Height of input feature maps
+            Height of input feature maps.
         input_width: int
-            Width of input feature maps
-        flatten_output: bool, optional
-            Whether to flatten the output, by default True
+            Width of input feature maps.
+        flatten_output: bool
+            Whether to flatten the output.
+        num_cameras: int
+            Number of camera views (1 for single-camera).
+        vision_mask: CameraVisionMask | None
+            Optional velocity-conditioned vision mask.
+        vision_tokens: str
+            Unflattened output layout: ``"spatial"`` -> ``[B, cells, C_out]``,
+            ``"channel"`` -> ``[B, C_out, cells]`` (FAR-FALCON-Terrains).
         """
         super().__init__()
         self.cnn_layers = cnn_layers
         self.input_channels = input_channels
         self.input_height = input_height
         self.input_width = input_width
-        self.expected_input_size = input_channels * input_height * input_width
+        self.num_cameras = num_cameras
+        self.is_multi_camera = num_cameras > 1
+        self.vision_mask = vision_mask
         self.flatten_output = flatten_output
+        if vision_tokens not in ("spatial", "channel"):
+            raise ValueError(f"vision_tokens must be 'spatial' or 'channel', got {vision_tokens!r}")
+        self.vision_tokens = vision_tokens
+
+        self.expected_input_size = num_cameras * input_channels * input_height * input_width
+
+        # Precompute output_channels for multi-camera reshape
+        with torch.no_grad():
+            dummy = torch.zeros(1, input_channels, input_height, input_width)
+            if self.is_multi_camera:
+                out = self.cnn_layers[0](dummy)
+            else:
+                out = self.cnn_layers(dummy)
+            self.output_channels = out.shape[1]
 
     @property
     def output_size(self):
         """Computes the output size of the CNN layers by doing a forward pass with dummy data."""
         with torch.no_grad():
-            dummy_input = torch.zeros(1, self.input_channels * self.input_height * self.input_width)
+            dummy_input = torch.zeros(1, self.expected_input_size)
             dummy_output = self.forward(dummy_input)
             return dummy_output.shape[-1]
 
-    def forward(self, x):
+    def forward(self, x, v_cmd: torch.Tensor | None = None):
         """Forward pass for CNNWrapper module.
-
-        Reshapes the input tensor to (batch_size, channels, height, width) and applies the CNN layers.
-        If flatten_output is True, flattens the output back to (batch_size, -1).
 
         Parameters
         ----------
         x: torch.Tensor
-            Input tensor of shape [B, C, H, W]
+            Flattened input ``[B, num_cameras * C * H * W]``.
+        v_cmd: torch.Tensor | None
+            Velocity command ``[B, D]`` for vision masking (only used when
+            ``vision_mask`` is not None).
 
         Returns
         -------
         torch.Tensor
-            Output tensor of shape [B, -1] if flatten_output is True, otherwise [B, C, H, W]
+            ``[B, -1]`` if ``flatten_output`` else ``[B, tokens, feat_dim]``.
         """
-        # Validate input size
         batch_size = x.shape[0]
         if x.shape[1] != self.expected_input_size:
             raise ValueError(
                 f"Input size mismatch: expected {self.expected_input_size} "
-                f"(channels={self.input_channels}, height={self.input_height}, width={self.input_width}), "
+                f"(cameras={self.num_cameras}, channels={self.input_channels}, "
+                f"height={self.input_height}, width={self.input_width}), "
                 f"but got {x.shape[1]}"
             )
 
-        # Reshape from flattened input to (batch_size, channels, height, width)
-        x = x.view(batch_size, self.input_channels, self.input_height, self.input_width)
+        if self.is_multi_camera:
+            x = x.view(batch_size, self.input_channels, self.num_cameras, self.input_height, self.input_width)
+            camera_outputs: list[torch.Tensor] = []
+            for cam_idx in range(self.num_cameras):
+                cam_x = x[:, :, cam_idx, :, :]  # [B, C, H, W]
+                cam_x = self.cnn_layers[cam_idx](cam_x)
+                cam_x = cam_x.view(batch_size, self.output_channels, -1)
+                camera_outputs.append(cam_x)
 
-        # Apply CNN layers
-        x = self.cnn_layers(x)
+            if self.vision_mask is not None:
+                if v_cmd is None:
+                    raise ValueError("vision_mask is enabled but v_cmd was not provided")
+                camera_outputs = self.vision_mask(camera_outputs, v_cmd)
+
+            x = torch.cat(camera_outputs, dim=-1)  # [B, C_out, feat*num_cameras]
+        else:
+            x = x.view(batch_size, self.input_channels, self.input_height, self.input_width)
+            x = self.cnn_layers(x)
+            x = x.view(batch_size, self.output_channels, -1)
 
         if self.flatten_output:
-            # Flatten back to (batch_size, -1)
             x = x.view(batch_size, -1)
-        else:
-            # x is currently [batch_size, channels, height, width]
-            # Reshape to [batch_size, height * width, channels]
-            x = x.view(batch_size, x.shape[1], -1)
-            x = x.permute(0, 2, 1)
+        elif self.vision_tokens == "spatial":
+            x = x.permute(0, 2, 1)  # [B, tokens, C_out]
+        # "channel": keep [B, C_out, feat*num_cameras] (one token per CNN channel)
 
         return x
 
@@ -297,8 +418,48 @@ def build_cnn_layer(
 
     cnn_sequential = nn.Sequential(*layers)
 
-    # Wrap with CNNWrapper to handle flattened inputs/outputs
-    return CNNWrapper(cnn_sequential, input_channels, input_height, input_width, flatten_output)
+    def _fresh_sequential() -> nn.Sequential:
+        # Same architecture, new parameters (activation modules are stateless and shared).
+        fresh = copy.deepcopy(cnn_sequential)
+        for module in fresh.modules():
+            if hasattr(module, "reset_parameters"):
+                module.reset_parameters()
+        return fresh
+
+    num_cameras = getattr(layer_config, "num_cameras", 1)
+    vision_mask = None
+
+    if num_cameras > 1:
+        if getattr(layer_config, "independent_camera_init", False):
+            extra_branches = [_fresh_sequential() for _ in range(num_cameras - 1)]
+        else:
+            extra_branches = [_clone_sequential(cnn_sequential) for _ in range(num_cameras - 1)]
+        cnn_layers = nn.ModuleList([cnn_sequential] + extra_branches)
+        if getattr(layer_config, "use_vision_mask", False):
+            vision_mask = CameraVisionMask(
+                num_cameras=num_cameras,
+                k=getattr(layer_config, "vision_mask_k", 4.0),
+                v_th=getattr(layer_config, "vision_mask_v_th", 0.05),
+                hard_cutoff=getattr(layer_config, "vision_mask_hard_cutoff", 0.0),
+            )
+    else:
+        cnn_layers = cnn_sequential
+
+    return CNNWrapper(
+        cnn_layers,
+        input_channels,
+        input_height,
+        input_width,
+        flatten_output,
+        num_cameras=num_cameras,
+        vision_mask=vision_mask,
+        vision_tokens=getattr(layer_config, "vision_tokens", "spatial"),
+    )
+
+
+def _clone_sequential(seq: nn.Sequential) -> nn.Sequential:
+    """Deep-copy an ``nn.Sequential`` so each camera gets independent weights."""
+    return copy.deepcopy(seq)
 
 
 class BaseModule(nn.Module):
@@ -372,16 +533,16 @@ class BaseModule(nn.Module):
                 layer_config,
                 flatten_output=True,
             )
-            encoder_output_dim = self.encoder.output_size
+            self.encoder_output_dim = self.encoder.output_size
             mlp_input_dim = sum(self.input_dim_dict[each_input] for each_input in layer_config.module_input_name)
             self.module = build_mlp_layer(
-                mlp_input_dim + encoder_output_dim,
+                mlp_input_dim + self.encoder_output_dim,
                 layer_config.hidden_dims,
                 self.output_dim,
                 layer_config,
             )
         elif layer_type == "MLPEncoder":
-            encoder_output_dim = (
+            self.encoder_output_dim = (
                 layer_config.encoder_output_dim
                 if layer_config.encoder_hidden_dims is not None
                 else self.input_dim_dict[layer_config.encoder_input_name]
@@ -389,12 +550,47 @@ class BaseModule(nn.Module):
             self.encoder = build_mlp_layer(
                 self.input_dim_dict[layer_config.encoder_input_name],
                 layer_config.encoder_hidden_dims,
-                encoder_output_dim,
+                self.encoder_output_dim,
                 layer_config,
             )
             mlp_input_dim = sum(self.input_dim_dict[each_input] for each_input in layer_config.module_input_name)
             self.module = build_mlp_layer(
-                mlp_input_dim + encoder_output_dim,
+                mlp_input_dim + self.encoder_output_dim,
+                layer_config.hidden_dims,
+                self.output_dim,
+                layer_config,
+            )
+        elif layer_type == "VisionTransformerEncoder":
+            cnn_encoder = build_cnn_layer(
+                layer_config.input_channels,
+                layer_config.input_height,
+                layer_config.input_width,
+                layer_config.hidden_channels,
+                layer_config.kernel_size,
+                layer_config.stride,
+                layer_config.padding,
+                layer_config,
+                flatten_output=False,
+            )
+            first_input = layer_config.module_input_name[0]
+            obs_dim_for_vit = self.input_dim_dict[first_input]
+            hl = self.history_length.get(first_input, 1)
+            self.encoder = VisionTransformerEncoder(
+                cnn_encoder,
+                obs_dim_for_vit,
+                hl,
+                layer_config.embed_dim,
+                layer_config.num_heads,
+                layer_config,
+            )
+            self.vision_mask_input_name = (
+                layer_config.vision_mask_input_name
+                if layer_config.use_vision_mask and layer_config.vision_mask_input_name
+                else ""
+            )
+            mlp_input_dim = sum(self.input_dim_dict[n] for n in layer_config.module_input_name)
+            self.module = build_mlp_layer(
+                mlp_input_dim + self.encoder.output_size,
                 layer_config.hidden_dims,
                 self.output_dim,
                 layer_config,
@@ -403,5 +599,4 @@ class BaseModule(nn.Module):
             raise NotImplementedError(f"Unsupported layer type: {layer_type}")
 
     def forward(self, policy_input):
-        # Only forward the MLP layer
         return self.module(policy_input)

@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import numpy as np
+import trimesh
 from loguru import logger
+from scipy.spatial import ConvexHull
+from shapely.geometry import LineString, Polygon
 
 from holosoma.envs.base_task.base_task import BaseTask
+from holosoma.utils.module_utils import get_holosoma_root
 from holosoma.utils.safe_torch_import import torch
 from holosoma.utils.torch_utils import torch_rand_float
 
@@ -53,6 +60,98 @@ class LeggedRobotLocomotionManager(BaseTask):
         self._init_domain_rand_buffers()
 
         self.lidar_height_offset = getattr(self.robot_config, "lidar_height_offset", 0.5)
+
+        self._init_foothold_sampling()
+
+    def _foothold_params_from_reward_cfg(self) -> dict:
+        """Read ``penalty_foothold`` term params (grid counts + epsilon)."""
+        cfg = getattr(self.reward_manager, "cfg", None)
+        terms = getattr(cfg, "terms", None) if cfg is not None else None
+        if not terms or "penalty_foothold" not in terms:
+            return {}
+        return dict(terms["penalty_foothold"].params)
+
+    def _init_foothold_sampling(self) -> None:
+        """Sole sample grids in each foot frame (FALCON-style mesh footprint sampler)."""
+        p = self._foothold_params_from_reward_cfg()
+        n_long = max(int(p.get("foothold_num_samples_long", 10)), 2)
+        n_wide = max(int(p.get("foothold_num_samples_wide", 5)), 2)
+
+        mesh_dir = self._resolve_foot_mesh_dir()
+        left_mesh = self._find_stl(mesh_dir, self.robot_config.asset.left_foot_mesh)
+        right_mesh = self._find_stl(mesh_dir, self.robot_config.asset.right_foot_mesh)
+        if left_mesh is None or right_mesh is None:
+            raise FileNotFoundError(
+                f"Could not find foot STL meshes in {mesh_dir}. "
+                f"Expected stems: {self.robot_config.asset.left_foot_mesh}, "
+                f"{self.robot_config.asset.right_foot_mesh}"
+            )
+
+        left_xy = self._footprint_sampler_grid(left_mesh, n_long, n_wide)
+        right_xy = self._footprint_sampler_grid(right_mesh, n_long, n_wide)
+        num_samples = min(left_xy.shape[0], right_xy.shape[0])
+
+        left_local = torch.as_tensor(left_xy[:num_samples], device=self.device, dtype=torch.float32)
+        right_local = torch.as_tensor(right_xy[:num_samples], device=self.device, dtype=torch.float32)
+        left_local = torch.cat([left_local, torch.zeros(num_samples, 1, device=self.device)], dim=1)
+        right_local = torch.cat([right_local, torch.zeros(num_samples, 1, device=self.device)], dim=1)
+        self.foot_samples_local = torch.stack([left_local, right_local], dim=0)
+        self.num_foot_samples = num_samples
+
+    def _resolve_foot_mesh_dir(self) -> Path:
+        mesh_root = self.robot_config.asset.mesh_root
+        if mesh_root is not None:
+            return Path(mesh_root)
+        asset_root = self.robot_config.asset.asset_root
+        if asset_root.startswith("@holosoma/"):
+            asset_root = asset_root.replace("@holosoma", get_holosoma_root(), 1)
+        robot_subdir = self.robot_config.asset.robot_type.split("_")[0]
+        return Path(asset_root) / robot_subdir / "meshes"
+
+    def _find_stl(self, mesh_dir: Path, stem: str) -> Path | None:
+        for suffix in (".STL", ".stl"):
+            p = mesh_dir / f"{stem}{suffix}"
+            if p.is_file():
+                return p
+        return None
+
+    def _footprint_sampler_grid(self, mesh_path: Path, num_x_points: int, num_y_points: int) -> np.ndarray:
+        """FAR-FALCON ``footprint_sampler_grid``: convex hull in XY + in-polygon grid sampling."""
+        foot_mesh = trimesh.load_mesh(str(mesh_path))
+        points_2d = np.asarray(foot_mesh.vertices[:, :2], dtype=np.float64)
+        hull = ConvexHull(points_2d)
+        footprint_polygon = Polygon(points_2d[hull.vertices])
+
+        min_x, min_y, max_x, max_y = footprint_polygon.bounds
+        sampled_points: list[tuple[float, float]] = []
+
+        x_cell_width = (max_x - min_x) / (num_x_points * 2)
+        x_coords = np.linspace(min_x + x_cell_width, max_x - x_cell_width, num_x_points)
+        for x in x_coords:
+            vertical_line = LineString([(x, min_y - 1.0), (x, max_y + 1.0)])
+            intersection = footprint_polygon.intersection(vertical_line)
+            if intersection.is_empty:
+                continue
+            slice_min_y, slice_max_y = intersection.bounds[1], intersection.bounds[3]
+            y_cell_width = (slice_max_y - slice_min_y) / (num_y_points * 2)
+            y_coords = np.linspace(slice_min_y + y_cell_width, slice_max_y - y_cell_width, num_y_points)
+            sampled_points.extend((float(x), float(y)) for y in y_coords)
+
+        if not sampled_points:
+            raise RuntimeError(f"footprint_sampler_grid produced no points for {mesh_path}")
+        return np.asarray(sampled_points, dtype=np.float32)
+
+    def _get_terrain_heights_at_points_world(self, pts_world: torch.Tensor) -> torch.Tensor:
+        """Terrain surface Z at each world XY (``pts_world`` shape ``[E, S, 3]``)."""
+        terrain_state = self.terrain_manager.get_state("locomotion_terrain")
+        if terrain_state is None or not hasattr(terrain_state, "query_terrain_heights"):
+            raise RuntimeError(
+                "penalty_foothold requires terrain state 'locomotion_terrain' with query_terrain_heights."
+            )
+        num_envs, num_pts, _ = pts_world.shape
+        xy = pts_world[..., :2].reshape(num_envs * num_pts, 2)
+        h = terrain_state.query_terrain_heights(xy)
+        return h.view(num_envs, num_pts)
 
     def _init_counters(self):
         self.common_step_counter = 0
@@ -127,12 +226,14 @@ class LeggedRobotLocomotionManager(BaseTask):
         self.simulator.clear_contact_forces_history(env_ids)
         self.need_to_refresh_envs[env_ids] = False
         self.simulator.refresh_sim_tensors()
-        self._pre_compute_observations_callback()
+        self._pre_compute_observations_callback(env_ids)
 
-    def _pre_compute_observations_callback(self):
+    def _pre_compute_observations_callback(self, env_ids=None):
+        if env_ids is None:
+            env_ids = slice(None)
         # prepare quantities
-        self.base_quat[:] = self.simulator.base_quat[:]
-        self.terrain_manager.update_heights()
+        self.base_quat[env_ids] = self.simulator.base_quat[env_ids]
+        self.terrain_manager.update_heights(env_ids)
 
     def _update_tasks_callback(self):
         super()._update_tasks_callback()
@@ -179,6 +280,27 @@ class LeggedRobotLocomotionManager(BaseTask):
     def _update_log_dict(self):
         avg = self._get_average_episode_tracker().get_average()
         self.log_dict["average_episode_length"] = avg.detach().cpu()
+        terrain_state = self.terrain_manager.get_state("locomotion_terrain")
+        if terrain_state is not None and hasattr(terrain_state, "terrain_levels"):
+            self.log_dict["terrain_level"] = terrain_state.terrain_levels.float().mean().detach().cpu()
+            if hasattr(terrain_state, "max_terrain_levels"):
+                self.log_dict["max_terrain_level"] = terrain_state.max_terrain_levels.float().mean().detach().cpu()
+
+            # Per-terrain-type mean / max levels (mirrors FAR-FALCON's
+            # ``terrain_level_{name}`` and ``max_terrain_level_{name}`` logs).
+            type_names = getattr(terrain_state, "terrain_type_names", None) or []
+            type_idx = getattr(terrain_state, "terrain_type_idx", None)
+            if type_names and type_idx is not None:
+                levels = terrain_state.terrain_levels
+                max_levels = getattr(terrain_state, "max_terrain_levels", None)
+                for i, name in enumerate(type_names):
+                    mask = type_idx == i
+                    if mask.any():
+                        self.log_dict[f"terrain_level_{name}"] = levels[mask].float().mean().detach().cpu()
+                        if max_levels is not None:
+                            self.log_dict[f"max_terrain_level_{name}"] = (
+                                max_levels[mask].float().mean().detach().cpu()
+                            )
 
     ################ Curriculum #################
 
@@ -302,11 +424,36 @@ class LeggedRobotLocomotionManager(BaseTask):
             if self.terrain_manager.get_state("locomotion_terrain").custom_origins:
                 # Get spawn config from terrain term
                 spawn_cfg = self.terrain_manager.cfg.terrain_term.spawn
+                terrain_state = self.terrain_manager.get_state("locomotion_terrain")
 
-                # Generate random XY offsets
+                # Generate per-env XY offsets. By default every env uses the symmetric
+                # ``xy_offset_range``. If a terrain-type mask is configured, envs whose
+                # terrain type is *not* in the mask use the (possibly narrower) masked
+                # x/y ranges — mirrors FAR-FALCON's ``env_rand_x_masked`` /
+                # ``env_rand_y_masked`` used for stepping-stones / beams.
                 xy_offsets = torch_rand_float(
                     -spawn_cfg.xy_offset_range, spawn_cfg.xy_offset_range, (len(env_ids), 2), device=str(self.device)
                 )
+                mask_names = spawn_cfg.xy_offset_terrain_mask
+                if mask_names is not None:
+                    type_names = getattr(terrain_state, "terrain_type_names", None) or []
+                    allowed_idx = [type_names.index(n) for n in mask_names if n in type_names]
+                    if allowed_idx:
+                        allowed = torch.tensor(allowed_idx, device=self.device, dtype=torch.long)
+                        env_types = terrain_state.terrain_type_idx[env_ids]
+                        in_mask = torch.isin(env_types, allowed)
+                    else:
+                        in_mask = torch.zeros(len(env_ids), device=self.device, dtype=torch.bool)
+                    masked_ids = (~in_mask).nonzero(as_tuple=False).flatten()
+                    if masked_ids.numel() > 0:
+                        x_rng = spawn_cfg.xy_offset_range_x_masked or [-spawn_cfg.xy_offset_range, spawn_cfg.xy_offset_range]
+                        y_rng = spawn_cfg.xy_offset_range_y_masked or [-spawn_cfg.xy_offset_range, spawn_cfg.xy_offset_range]
+                        xy_offsets[masked_ids, 0] = torch_rand_float(
+                            float(x_rng[0]), float(x_rng[1]), (int(masked_ids.numel()), 1), device=str(self.device)
+                        ).squeeze(1)
+                        xy_offsets[masked_ids, 1] = torch_rand_float(
+                            float(y_rng[0]), float(y_rng[1]), (int(masked_ids.numel()), 1), device=str(self.device)
+                        ).squeeze(1)
 
                 if spawn_cfg.query_terrain_height:
                     # ACCURATE: Query terrain height at new XY position (slower, for rough terrain)

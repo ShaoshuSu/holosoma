@@ -88,6 +88,22 @@ class PhysxConfig:
     bounce_threshold_velocity: float = 0.5
     """Velocity threshold below which bounce responses are suppressed."""
 
+    contact_offset: float | None = None
+    """PhysX contact offset in meters. ``None`` keeps the simulator default."""
+
+    rest_offset: float | None = None
+    """PhysX rest offset in meters. ``None`` keeps the simulator default."""
+
+    max_depenetration_velocity: float | None = None
+    """Maximum depenetration velocity in m/s. ``None`` keeps the simulator default."""
+
+    default_buffer_size_multiplier: int | None = None
+    """Multiplier for PhysX GPU buffer sizes. ``None`` keeps the simulator default."""
+
+    contact_collection: int | None = None
+    """IsaacGym contact collection mode (0 never, 1 last substep, 2 all substeps).
+    ``None`` keeps the simulator default."""
+
 
 @dataclass(frozen=True)
 class MujocoXMLFilterCfg:

@@ -191,6 +191,7 @@ class PPO(BaseAlgo):
             num_learning_iterations=self.config.num_learning_iterations,
             is_main_process=self.is_main_process,
             num_gpus=self.gpu_world_size,
+            log_raw_episode=self.config.log_raw_episode,
         )
 
         self._init_config()
@@ -642,6 +643,18 @@ class PPO(BaseAlgo):
         elif kl_mean < self.config.desired_kl / 2.0 and kl_mean > 0.0:
             self.actor_learning_rate = min(self.max_actor_learning_rate, self.actor_learning_rate * 1.5)
             self.critic_learning_rate = min(self.max_critic_learning_rate, self.critic_learning_rate * 1.5)
+
+        # Broadcast rank-0 LR to all ranks so the adaptive schedule stays bit-for-bit
+        # identical across workers even under non-deterministic reductions.
+        if self.is_multi_gpu:
+            lr_tensor = torch.tensor(
+                [self.actor_learning_rate, self.critic_learning_rate],
+                device=self.device,
+                dtype=torch.float,
+            )
+            torch.distributed.broadcast(lr_tensor, src=0)
+            self.actor_learning_rate = float(lr_tensor[0].item())
+            self.critic_learning_rate = float(lr_tensor[1].item())
 
         for param_group in self.actor_optimizer.param_groups:
             param_group["lr"] = self.actor_learning_rate

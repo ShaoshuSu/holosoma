@@ -1,0 +1,154 @@
+"""Configuration types for the camera manager."""
+
+from __future__ import annotations
+
+from dataclasses import field
+from typing import Any
+
+from pydantic.dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class CameraPose:
+    """Configuration for a single camera pose.
+
+    Defines the position and orientation of a camera relative to a robot link.
+    """
+
+    camera_body_link: str
+    """Robot link to which the camera is attached."""
+
+    camera_offset: list[float]
+    """Camera position offset from the link in [x, y, z] meters (length 3)."""
+
+    camera_rotation: list[float]
+    """Camera orientation as Euler angles [roll, pitch, yaw] in degrees (length 3)."""
+
+
+@dataclass(frozen=True)
+class CameraProps:
+    """Camera properties and settings.
+
+    Defines the technical specifications and capture settings for cameras.
+    """
+
+    image_type: str
+    """Type of image to capture (e.g., 'depth', 'rgb', 'rgbd')."""
+
+    width: int
+    """Original image width in pixels."""
+
+    height: int
+    """Original image height in pixels."""
+
+    resized_width: int
+    """Target width after resizing (if if_resize is True)."""
+
+    resized_height: int
+    """Target height after resizing (if if_resize is True)."""
+
+    horizontal_fov: float
+    """Horizontal field of view in degrees."""
+
+    vertical_fov: float
+    """Vertical field of view in degrees."""
+
+    near_clip: float
+    """Near clipping plane distance in meters."""
+
+    far_clip: float
+    """Far clipping plane distance in meters."""
+
+    frame_rate: int
+    """Capture frame rate in Hz."""
+
+    image_show: bool = False
+    """Whether to display captured images (for debugging)."""
+
+    depth_delay: int = 1
+    """Depth sensor delay in captured frames (index into the depth ring buffer, 0 = latest).
+
+    Only used when ``depth_buffer_len > 1``; then it is the default for
+    ``depth_delay_range`` (``[depth_delay, depth_delay]``).
+    """
+
+    depth_buffer_len: int = 1
+    """Length of the processed-depth ring buffer (FAR-FALCON-Terrains ``depth_buffer_len``).
+
+    ``1`` (default) disables the delay buffer and observations see the latest
+    frame.  ``> 1`` enables it: every capture shifts the buffer and inserts the
+    new frame at index 0, observations read the frame at a per-env delay index,
+    and the buffer is cleared for envs that reset.  It is grown to
+    ``max(depth_delay_range) + 1`` if needed.
+    """
+
+    depth_delay_range: list[int] | None = None
+    """Inclusive ``[min, max]`` range the per-env delay index is sampled from on
+    reset (FALCON ``randomize_depth_camera_delay_range``).  ``None`` uses
+    ``[depth_delay, depth_delay]``.  Only used when ``depth_buffer_len > 1``."""
+
+
+@dataclass(frozen=True)
+class CameraConfig:
+    """Complete camera system configuration.
+
+    Defines all cameras in the system with their poses and shared properties.
+
+    Examples
+    --------
+    Dual depth camera setup:
+    >>> camera_config = CameraConfig(
+    ...     pose=CameraPose(
+    ...             camera_body_link="torso_link",
+    ...             camera_offset=[0.1, 0.0, 0.1],
+    ...             camera_rotation=[0.0, 75.0, 0.0]
+    ...         ),
+    ...     props=CameraProps(
+    ...         image_type="depth",
+    ...         width=240,
+    ...         height=135,
+    ...         # ... other properties
+    ...     )
+    ... )
+    """
+
+    pose: CameraPose
+    """Dictionary mapping camera names to their pose configurations.
+
+    Each key is a camera identifier (e.g., "cam_front_depth", "cam_back_depth"),
+    and each value is a CameraPose defining where and how the camera is mounted.
+    """
+
+    props: CameraProps
+    """Shared camera properties applied to all cameras.
+
+    All cameras in the system use the same technical specifications
+    (resolution, FOV, frame rate, etc.) as defined in this CameraProps instance.
+    """
+
+
+@dataclass(frozen=True)
+class CameraTermCfg:
+    """Configuration for a single camera term."""
+
+    func: str
+    """Import path for the camera hook (function or callable class)."""
+
+    params: dict[str, Any] = field(default_factory=dict)
+    """Additional parameters forwarded to the camera hook."""
+
+
+@dataclass(frozen=True)
+class CameraManagerCfg:
+    """Configuration for the camera manager."""
+
+    terms: dict[str, CameraTermCfg] = field(default_factory=dict)
+    """Mapping of camera term name to configuration."""
+
+    image_show: bool = False
+    """Global override to display depth images for all camera terms.
+
+    Set via CLI: ``--camera.image-show=True``.
+    When True, shows depth from env 0 for every term on capture.
+    Per-term ``CameraProps.image_show`` also works independently.
+    """

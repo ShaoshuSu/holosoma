@@ -50,8 +50,10 @@ class WholeBodyTrackingManager(BaseTask):
         self.default_dof_pos_base = self.default_dof_pos_base.unsqueeze(0)  # (1, num_dof)
         self.default_dof_pos = self.default_dof_pos_base.repeat(self.num_envs, 1).clone()  # (num_envs, num_dof)
 
-    def _pre_compute_observations_callback(self):
-        self.base_quat[:] = self.simulator.base_quat[:]
+    def _pre_compute_observations_callback(self, env_ids=None):
+        if env_ids is None:
+            env_ids = slice(None)
+        self.base_quat[env_ids] = self.simulator.base_quat[env_ids]
 
     def _reset_buffers_callback(self, env_ids, target_buf=None):
         self.need_to_refresh_envs[env_ids] = True
@@ -69,7 +71,7 @@ class WholeBodyTrackingManager(BaseTask):
         self.simulator.clear_contact_forces_history(env_ids)
         self.need_to_refresh_envs[env_ids] = False
         self.simulator.refresh_sim_tensors()
-        self._pre_compute_observations_callback()
+        self._pre_compute_observations_callback(env_ids)
 
     def _get_average_episode_tracker(self):
         tracker = self.curriculum_manager.get_term("average_episode_tracker")

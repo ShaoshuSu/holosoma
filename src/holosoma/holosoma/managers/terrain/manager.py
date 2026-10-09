@@ -43,6 +43,10 @@ class TerrainManager:
     def update_heights(self, env_ids=None) -> None:
         self.terrain_term.update_heights(env_ids)
 
+    def draw_debug_viz(self) -> None:
+        """Delegate debug drawing to the terrain term."""
+        self.terrain_term.draw_debug_viz()
+
     def get_state(self, term_name: str) -> TerrainTermBase:
         """Retrieve a stateful terrain term by name.
 

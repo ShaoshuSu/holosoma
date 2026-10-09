@@ -53,6 +53,7 @@ class LoggingHelper:
         title: str = "Training Log",
         is_main_process: bool = True,
         num_gpus: int = 1,
+        log_raw_episode: bool = True,
     ):
         """Initialize the logging helper.
 
@@ -78,6 +79,9 @@ class LoggingHelper:
             Whether this is the main process.
         num_gpus : int, optional
             Number of GPUs to use.
+        log_raw_episode : bool, optional
+            If True, log per-term **unscaled** reward (``raw_rew_*``) to the console and TensorBoard.
+            Default True. Scaled ``rew_*`` episode stats are always logged when present.
         """
         self.writer: SummaryWriter = writer
         self.log_dir: str = str(log_dir)
@@ -93,6 +97,7 @@ class LoggingHelper:
         self.title: str = title
         self.is_main_process: bool = is_main_process
         self.num_gpus: int = num_gpus
+        self.log_raw_episode: bool = log_raw_episode
 
         # Book keeping
         self.ep_infos: list[dict[str, Any]] = []
@@ -132,8 +137,7 @@ class LoggingHelper:
         if not self.is_main_process:
             return
         self.ep_infos.append(infos["episode"])
-        # Also process raw episode data if it exists
-        if "raw_episode" in infos:
+        if self.log_raw_episode and "raw_episode" in infos:
             self.raw_ep_infos.append(infos["raw_episode"])
         self.cur_reward_sum += rewards
         self.cur_episode_length += 1
@@ -260,7 +264,7 @@ class LoggingHelper:
                 ep_string += f"""{f"Mean episode {key}:":>35} {value:.4f}\n"""
 
         # Process raw episode info if it exists
-        if self.raw_ep_infos:
+        if self.log_raw_episode and self.raw_ep_infos:
             for key in self.raw_ep_infos[0]:
                 infotensor = torch.tensor([], device=self.device)
                 for ep_info in self.raw_ep_infos:

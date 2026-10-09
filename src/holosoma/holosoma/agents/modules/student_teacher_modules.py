@@ -25,6 +25,12 @@ from loguru import logger
 from torch import nn
 from torch.distributions import Normal
 
+from holosoma.agents.modules.ppo_modules import (
+    PPOActor,
+    PPOActorEncoder,
+    PPOActorVisionTransformerEncoder,
+)
+
 MIN_ACTION_STD = 1.0e-6
 
 # PPO builds its EmpiricalNormalization with the default eps, which its state
@@ -473,3 +479,51 @@ class DepthStudentTeacherCritic(DepthStudentTeacher):
 
     def evaluate(self, policy_state_dict: dict[str, torch.Tensor]) -> torch.Tensor:
         return self.critic(policy_state_dict["critic_obs"])
+
+
+# ---------------------------------------------------------------------------
+# Deterministic student / teacher actor wrappers used by DAgger (RPL).
+# Unlike PPO actors, DAgger actors act deterministically during rollouts: the
+# action returned by act() is the distribution mean, so student and teacher
+# produce reproducible targets for the BC loss. Encoder / CNN / ViT variants
+# expose the encoder output so it can be distilled alongside the action.
+# ---------------------------------------------------------------------------
+
+
+class STActor(PPOActor):
+    """Deterministic MLP actor used for both student and teacher in DAgger."""
+
+    is_recurrent = False
+
+    def act(self, policy_state_dict):
+        self.update_distribution(policy_state_dict["actor_obs"])
+        return self.action_mean
+
+    def get_encoder_output(self) -> torch.Tensor | None:
+        return None
+
+
+class STActorEncoder(PPOActorEncoder):
+    """Deterministic encoder actor (MLP/CNN encoder + MLP head)."""
+
+    is_recurrent = False
+
+    def act(self, policy_state_dict):
+        super().act(policy_state_dict)
+        return self.action_mean
+
+    def get_encoder_output(self) -> torch.Tensor:
+        return self.actor_encoder_obs
+
+
+class STActorVisionTransformerEncoder(PPOActorVisionTransformerEncoder):
+    """Deterministic vision-transformer actor."""
+
+    is_recurrent = False
+
+    def act(self, policy_state_dict):
+        super().act(policy_state_dict)
+        return self.action_mean
+
+    def get_encoder_output(self) -> torch.Tensor:
+        return self.actor_encoder_obs

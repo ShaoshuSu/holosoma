@@ -76,17 +76,21 @@ def penalty_action_rate(env: LeggedRobotLocomotionManager) -> torch.Tensor:
     return torch.sum(torch.square(prev_actions - actions), dim=1)
 
 
-def penalty_orientation(env: LeggedRobotLocomotionManager) -> torch.Tensor:
+def penalty_orientation(env: LeggedRobotLocomotionManager, walk_only: bool = False) -> torch.Tensor:
     """Penalize non-flat base orientation.
 
     Args:
         env: The environment instance
+        walk_only: Gate by the walk flag ``commands[:, 4]`` (FAR-FALCON decoupled loco-manip).
 
     Returns:
         Reward tensor [num_envs]
     """
     projected = get_projected_gravity(env)
-    return torch.sum(torch.square(projected[:, :2]), dim=1)
+    penalty = torch.sum(torch.square(projected[:, :2]), dim=1)
+    if walk_only:
+        penalty = penalty * env.command_manager.commands[:, 4]
+    return penalty
 
 
 def penalty_feet_ori(env: LeggedRobotLocomotionManager) -> torch.Tensor:
@@ -188,18 +192,24 @@ def penalty_ang_vel_xy(env) -> torch.Tensor:
     return torch.sum(torch.square(ang_vel[:, :2]), dim=1)
 
 
-def penalty_close_feet_xy(env, close_feet_threshold: float = 0.05) -> torch.Tensor:
+def penalty_close_feet_xy(env, close_feet_threshold: float = 0.05, mode: str = "lateral") -> torch.Tensor:
     """Penalize when feet are too close together in xy plane.
 
     Args:
         env: The environment instance
         close_feet_threshold: Minimum distance threshold between feet
+        mode: ``"lateral"`` measures the base-frame lateral gap; ``"norm"`` the world xy
+            distance (FAR-FALCON ``_reward_penalty_close_feet_xy``).
 
     Returns:
         Reward tensor [num_envs]
     """
     left_foot_xy = env.simulator._rigid_body_pos[:, env.feet_indices[0], :2]
     right_foot_xy = env.simulator._rigid_body_pos[:, env.feet_indices[1], :2]
+    if mode == "norm":
+        return (torch.norm(left_foot_xy - right_foot_xy, dim=1) < close_feet_threshold).float()
+    if mode != "lateral":
+        raise ValueError(f"penalty_close_feet_xy: unknown mode {mode!r} (expected 'lateral' or 'norm')")
 
     # Get base orientation
     base_forward = quat_apply(env.base_quat, base_forward_vector(env), w_last=True)
@@ -215,39 +225,17 @@ def penalty_close_feet_xy(env, close_feet_threshold: float = 0.05) -> torch.Tens
     return (feet_distance < close_feet_threshold).float()
 
 
-def base_height(
-    env, desired_base_height: float = 0.89, zero_vel_penalty_scale: float = 1.0, stance_penalty_scale: float = 1.0
-) -> torch.Tensor:
+def base_height(env, desired_base_height: float = 0.89) -> torch.Tensor:
     """Penalize base height away from target.
 
     Args:
         env: The environment instance
         desired_base_height: Target base height
-        zero_vel_penalty_scale: Multiplier for base height penalty when robot has zero velocity commands
-        stance_penalty_scale: Multiplier for base height penalty when robot is in stance mode
 
     Returns:
         Reward tensor [num_envs]
     """
-    base_height_penalty = torch.square(
-        env.terrain_manager.get_state("locomotion_terrain").base_heights - desired_base_height
-    )
-
-    # Apply stronger penalty for zero velocity commands if configured
-    if zero_vel_penalty_scale != 1.0:
-        commands = env.command_manager.commands
-        zero_vel_mask = torch.norm(commands[:, :2], dim=1) < 0.1
-        base_height_penalty = torch.where(
-            zero_vel_mask, base_height_penalty * zero_vel_penalty_scale, base_height_penalty
-        )
-
-    # Apply stronger penalty for stance mode if configured (used in decoupled locomotion)
-    if stance_penalty_scale != 1.0 and hasattr(env, "stance_mask"):
-        base_height_penalty = torch.where(
-            env.stance_mask, base_height_penalty * stance_penalty_scale, base_height_penalty
-        )
-
-    return base_height_penalty
+    return torch.square(env.terrain_manager.get_state("locomotion_terrain").base_heights - desired_base_height)
 
 
 def feet_phase(env, swing_height: float = 0.08, tracking_sigma: float = 0.25) -> torch.Tensor:
@@ -313,23 +301,25 @@ def pose(
     return torch.sum(weighted_error, dim=1)
 
 
-def penalty_stumble(env) -> torch.Tensor:
+def penalty_stumble(env, stumble_ratio: float = 0.5) -> torch.Tensor:
     """Penalize feet hitting vertical surfaces.
 
     Args:
         env: The environment instance
+        stumble_ratio: Horizontal-to-vertical contact force ratio above which a
+            foot is considered to be stumbling. Lower is more sensitive.
 
     Returns:
         Reward tensor [num_envs]
     """
     return torch.any(
         torch.norm(env.simulator.contact_forces[:, env.feet_indices, :2], dim=2)
-        > 4 * torch.abs(env.simulator.contact_forces[:, env.feet_indices, 2]),
+        > stumble_ratio * torch.abs(env.simulator.contact_forces[:, env.feet_indices, 2]),
         dim=1,
     )
 
 
-def penalty_foothold(env, foothold_epsilon: float = 0.01) -> torch.Tensor:
+def penalty_foothold(env, foothold_epsilon: float = 0.05, **kwargs) -> torch.Tensor:
     """Sampling-based foothold penalty.
 
     For each foot in contact, sample a grid of points on the sole, transform to world,
@@ -338,7 +328,8 @@ def penalty_foothold(env, foothold_epsilon: float = 0.01) -> torch.Tensor:
 
     Args:
         env: The environment instance
-        foothold_epsilon: Threshold for foothold depth penalty
+        foothold_epsilon: Threshold for foothold depth penalty (meters)
+        **kwargs: Grid count keys from ``term_cfg.params`` (not used in this function).
 
     Returns:
         Reward tensor [num_envs]

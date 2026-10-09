@@ -88,8 +88,10 @@ def random_uniform_terrain(
     y_upsampled = np.linspace(0, terrain.length * terrain.horizontal_scale, terrain.length)
 
     # Use RectBivariateSpline for linear interpolation
+    # Evaluate on the full (x, y) grid. ``grid=False`` would sample only the diagonal and,
+    # broadcast over the tile, turn the noise into parallel ridges (one unique row).
     func = interpolate.RectBivariateSpline(x, y, height_field_downsampled, kx=1, ky=1)
-    z_upsampled = func(x_upsampled, y_upsampled, grid=False)
+    z_upsampled = func(x_upsampled, y_upsampled)
 
     # Add interpolated heights to terrain
     terrain.height_field_raw += np.rint(z_upsampled).astype(np.int16)
@@ -158,7 +160,11 @@ def pyramid_sloped_terrain(terrain: SubTerrain, slope: float = 1, platform_size:
 
 
 def pyramid_stairs_terrain(
-    terrain: SubTerrain, step_width: float, step_height: float, platform_size: float = 1.0
+    terrain: SubTerrain,
+    step_width: float,
+    step_height: float,
+    platform_size: float = 1.0,
+    random_step_height_range: tuple[float, float] = (0.0, 0.0),
 ) -> SubTerrain:
     """Generate pyramid-shaped stairs terrain.
 
@@ -178,6 +184,10 @@ def pyramid_stairs_terrain(
         Height of each step in meters. Can be negative for descending stairs.
     platform_size : float, optional
         Size of the flat platform at the center in meters. Default is 1.0.
+    random_step_height_range : tuple[float, float], optional
+        ``(min_delta, max_delta)`` to randomize each step's height in meters.
+        Each step's height becomes ``step_height + delta`` with ``delta`` sampled
+        uniformly from the range. Default ``(0.0, 0.0)`` disables randomization.
 
     Returns
     -------
@@ -191,6 +201,10 @@ def pyramid_stairs_terrain(
     step_height_px = int(step_height / terrain.vertical_scale)
     platform_pixels = int(platform_size / terrain.horizontal_scale)
 
+    min_delta_px = int(random_step_height_range[0] / terrain.vertical_scale)
+    max_delta_px = int(random_step_height_range[1] / terrain.vertical_scale)
+    randomize_step_height = min_delta_px != 0 or max_delta_px != 0
+
     # Build pyramid stairs from edges toward center
     current_height = 0
     start_x, start_y = 0, 0
@@ -202,8 +216,12 @@ def pyramid_stairs_terrain(
         stop_x -= step_width_px
         start_y += step_width_px
         stop_y -= step_width_px
-        # Increase height
-        current_height += step_height_px
+        # Increase height (optionally with per-step random delta)
+        if randomize_step_height:
+            delta = np.random.randint(min_delta_px, max_delta_px + 1)
+            current_height += step_height_px + delta
+        else:
+            current_height += step_height_px
         # Apply height to current step region
         terrain.height_field_raw[start_x:stop_x, start_y:stop_y] = current_height
 
@@ -215,7 +233,7 @@ def convert_heightfield_to_trimesh(
     horizontal_scale: float,
     vertical_scale: float,
     slope_threshold: float | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Convert a heightfield array to a triangle mesh.
 
     Converts a 2D heightfield array to a triangle mesh represented by vertices
@@ -225,6 +243,10 @@ def convert_heightfield_to_trimesh(
     The correction works by moving vertices horizontally when the slope between
     adjacent points exceeds the threshold, effectively creating vertical walls
     instead of extremely steep slopes.
+
+    Also computes edge masks that mark cells where the terrain has steep slope
+    transitions or void/gap areas (height below -0.15 m). These masks are used
+    by the ``penalty_feet_edge`` reward to penalize foot placements on edges.
 
     Adapted from Isaac Lab's convert_height_field_to_mesh function.
 
@@ -242,12 +264,16 @@ def convert_heightfield_to_trimesh(
 
     Returns
     -------
-    tuple[np.ndarray, np.ndarray]
+    tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
         A tuple containing:
         - vertices : np.ndarray of shape (num_vertices, 3)
             Each row is a vertex position [x, y, z] in meters.
         - triangles : np.ndarray of shape (num_triangles, 3)
             Each row contains indices of the 3 vertices forming a triangle.
+        - x_edge_mask : np.ndarray of shape (num_rows, num_cols), bool
+            True where there is a steep slope edge in x or a void area.
+        - y_edge_mask : np.ndarray of shape (num_rows, num_cols), bool
+            True where there is a steep slope edge in y or a void area.
     """
     num_rows, num_cols = height_field_raw.shape
 
@@ -319,7 +345,18 @@ def convert_heightfield_to_trimesh(
         triangles[start + 1 : stop : 2, 1] = ind2
         triangles[start + 1 : stop : 2, 2] = ind3
 
-    return vertices, triangles
+    # Edge masks: mark slope transitions and void/gap areas.
+    void_height_threshold = -0.15 / vertical_scale
+    void_mask = hf < void_height_threshold
+
+    if slope_threshold is not None:
+        x_edge_mask = (move_x != 0) | void_mask
+        y_edge_mask = (move_y != 0) | void_mask
+    else:
+        x_edge_mask = void_mask
+        y_edge_mask = void_mask
+
+    return vertices, triangles, x_edge_mask, y_edge_mask
 
 
 def sloped_terrain(terrain: SubTerrain, slope: float = 1) -> SubTerrain:
@@ -563,6 +600,130 @@ def stepping_stones_terrain(
             start_x += stone_size_px + stone_distance_px
 
     # Create flat platform at center
+    x1 = (terrain.width - platform_pixels) // 2
+    x2 = (terrain.width + platform_pixels) // 2
+    y1 = (terrain.length - platform_pixels) // 2
+    y2 = (terrain.length + platform_pixels) // 2
+    terrain.height_field_raw[x1:x2, y1:y2] = 0
+    return terrain
+
+
+def stepping_stones_columns_terrain(
+    terrain: SubTerrain,
+    stone_size: float,
+    stone_distance_row: float,
+    stone_distance_col: float,
+    max_height: float,
+    platform_size: float = 1.0,
+    depth: float = -10,
+    num_columns: int | None = None,
+) -> SubTerrain:
+    """Generate stepping stones arranged in centered rows and columns.
+
+    Creates stones laid out as a fixed number of rows (along the y axis) and
+    columns (along the x axis) centered on the terrain, with a flat platform at
+    the center. Differs from :func:`stepping_stones_terrain` in that the stone
+    count is deterministic and stones are centered rather than randomly shifted.
+
+    Adapted from FAR-FALCON-Terrains' ``stepping_stones_columns_terrain``.
+
+    Parameters
+    ----------
+    terrain : SubTerrain
+        The terrain object to modify in-place.
+    stone_size : float
+        Horizontal size of each stepping stone in meters.
+    stone_distance_row : float
+        Gap between rows of stones (along the length/y axis) in meters.
+    stone_distance_col : float
+        Gap between stones within a row (along the width/x axis) in meters.
+    max_height : float
+        Maximum height variation of stones in meters (positive and negative).
+    platform_size : float, optional
+        Size of the flat platform at the center in meters. Default is 1.0.
+    depth : float, optional
+        Depth of gaps between stones in meters. Default is -10.
+    num_columns : int, optional
+        Number of rows/columns of stones centered on the terrain. Must be even
+        for centered placement. If ``None``, stones fill the entire terrain.
+
+    Returns
+    -------
+    SubTerrain
+        The modified terrain object (same as input).
+    """
+    # Convert to discrete units
+    stone_size_px = int(stone_size / terrain.horizontal_scale)
+    stone_distance_row_px = int(stone_distance_row / terrain.horizontal_scale)
+    stone_distance_col_px = int(stone_distance_col / terrain.horizontal_scale)
+    max_height_px = int(max_height / terrain.vertical_scale)
+    platform_pixels = int(platform_size / terrain.horizontal_scale)
+    depth_px = int(depth / terrain.vertical_scale)
+
+    height_range = np.arange(-max_height_px - 1, max_height_px, step=1)
+
+    # Fill entire terrain with depth (gaps)
+    terrain.height_field_raw[:, :] = depth_px
+
+    # Compute centering offsets for a finite number of rows/columns
+    if num_columns is not None:
+        if num_columns % 2 != 0:
+            raise ValueError("num_columns must be even for centered placement")
+
+        row_height = stone_size_px + stone_distance_row_px
+        total_rows_height = num_columns * row_height - stone_distance_row_px
+        start_y_offset = (terrain.length - total_rows_height) // 2
+
+        column_width = stone_size_px + stone_distance_col_px
+        total_columns_width = num_columns * column_width - stone_distance_col_px
+        start_x_offset = (terrain.width - total_columns_width) // 2
+    else:
+        start_y_offset = 0
+        start_x_offset = 0
+
+    # Generate stones in rows (each row spans the terrain width)
+    start_y = start_y_offset if num_columns is not None else 0
+    row_count = 0
+    while start_y < terrain.length and (num_columns is None or row_count < num_columns):
+        stop_y = min(terrain.length, start_y + stone_size_px)
+
+        if num_columns is None:
+            start_x = np.random.randint(0, stone_size_px)
+            stop_x = max(0, start_x - stone_distance_col_px)
+            terrain.height_field_raw[0:stop_x, start_y:stop_y] = np.random.choice(height_range)
+        else:
+            start_x = 0
+
+        while start_x < terrain.width:
+            stop_x = min(terrain.width, start_x + stone_size_px)
+            terrain.height_field_raw[start_x:stop_x, start_y:stop_y] = np.random.choice(height_range)
+            start_x += stone_size_px + stone_distance_col_px
+
+        start_y += stone_size_px + stone_distance_row_px
+        row_count += 1
+
+    # Generate stones in columns (each column spans the terrain length)
+    start_x = start_x_offset if num_columns is not None else 0
+    col_count = 0
+    while start_x < terrain.width and (num_columns is None or col_count < num_columns):
+        stop_x = min(terrain.width, start_x + stone_size_px)
+
+        if num_columns is None:
+            start_y = np.random.randint(0, stone_size_px)
+            stop_y = max(0, start_y - stone_distance_col_px)
+            terrain.height_field_raw[start_x:stop_x, 0:stop_y] = np.random.choice(height_range)
+        else:
+            start_y = 0
+
+        while start_y < terrain.length:
+            stop_y = min(terrain.length, start_y + stone_size_px)
+            terrain.height_field_raw[start_x:stop_x, start_y:stop_y] = np.random.choice(height_range)
+            start_y += stone_size_px + stone_distance_col_px
+
+        start_x += stone_size_px + stone_distance_row_px
+        col_count += 1
+
+    # Flat platform at center
     x1 = (terrain.width - platform_pixels) // 2
     x2 = (terrain.width + platform_pixels) // 2
     y1 = (terrain.length - platform_pixels) // 2

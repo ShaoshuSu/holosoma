@@ -7,7 +7,12 @@ from typing import Any
 
 import torch
 
-from holosoma.config_types.reward import RewardManagerCfg, RewardTermCfg
+from holosoma.config_types.reward import (
+    MultiAgentRewardManagerCfg,
+    MultiAgentRewardTermCfg,
+    RewardManagerCfg,
+    RewardTermCfg,
+)
 
 from .base import RewardTermBase
 
@@ -331,3 +336,71 @@ class RewardManager:
         for name, cfg in zip(self._term_names, self._term_cfgs):
             msg += f"  - {name}: weight={cfg.weight}\n"
         return msg
+
+class MultiAgentRewardManager(RewardManager):
+    """Reward manager that also accumulates per-body scaled rewards for decoupled PPO."""
+
+    def __init__(self, cfg: MultiAgentRewardManagerCfg, env: Any, device: str):
+        super().__init__(cfg, env, device)
+        self._ma_cfg = cfg
+        self._ma_bufs: dict[str, torch.Tensor] | None = None
+        self.last_multi_agent_rewards: dict[str, torch.Tensor] = {}
+        keys = cfg.multi_agent_body_keys
+        if keys:
+            self._ma_bufs = {
+                k: torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device) for k in keys
+            }
+
+    def compute(self, dt: float) -> torch.Tensor:
+        self._reward_buf[:] = 0.0
+        if self._ma_bufs is not None:
+            for b in self._ma_bufs.values():
+                b.zero_()
+
+        for term_name, term_cfg in zip(self._term_names, self._term_cfgs):
+            if term_name in self._term_instances:
+                instance = self._term_instances[term_name]
+                rew_raw = instance(self.env, **term_cfg.params)
+            else:
+                func = self._term_funcs[term_name]
+                rew_raw = func(self.env, **term_cfg.params)
+
+            if rew_raw.shape[0] != self.env.num_envs:
+                raise ValueError(
+                    f"Reward term '{term_name}' returned wrong shape. "
+                    f"Expected [{self.env.num_envs}], got {rew_raw.shape}"
+                )
+
+            rew_scaled = rew_raw * term_cfg.weight * dt
+            self._reward_buf += rew_scaled
+
+            if self._ma_bufs is not None:
+                grp = (
+                    term_cfg.ma_reward_group
+                    if isinstance(term_cfg, MultiAgentRewardTermCfg)
+                    else None
+                )
+                grp = grp or "shared"
+                if grp == "shared":
+                    for b in self._ma_bufs.values():
+                        b += rew_scaled
+                elif grp in self._ma_bufs:
+                    self._ma_bufs[grp] += rew_scaled
+                else:
+                    raise ValueError(
+                        f"Reward term '{term_name}' has ma_reward_group={grp!r} but "
+                        f"multi_agent_body_keys={self._ma_cfg.multi_agent_body_keys!r}"
+                    )
+
+            self._episode_sums[term_name] += rew_scaled
+            self._episode_sums_raw[term_name] += rew_raw
+
+        if self.cfg.only_positive_rewards:
+            self._reward_buf[:] = torch.clip(self._reward_buf, min=0.0)
+
+        if self._ma_bufs is not None:
+            self.last_multi_agent_rewards = {k: v.clone() for k, v in self._ma_bufs.items()}
+        else:
+            self.last_multi_agent_rewards = {}
+
+        return self._reward_buf

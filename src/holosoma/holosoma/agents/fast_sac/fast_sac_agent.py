@@ -176,6 +176,7 @@ class FastSACAgent(BaseAlgo):
             num_learning_iterations=config.num_learning_iterations,
             is_main_process=self.is_main_process,
             num_gpus=self.gpu_world_size,
+            log_raw_episode=config.log_raw_episode,
         )
 
         self.training_metrics = TensorAverageMeterDict()

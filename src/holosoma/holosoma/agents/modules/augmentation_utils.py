@@ -188,6 +188,19 @@ class SymmetryUtils:
             dtype=torch.float,
         )
 
+        # Per-body-part full-DOF index list for decoupled MA action mirroring.
+        # Lower/upper DOFs are contiguous in Holosoma's G1 layout, so FAR-FALCON's
+        # ``joint_map[part_indices] - min(part_indices)`` trick works directly.
+        self.body_part_full_dof_indices: Dict[str, torch.Tensor] = {}
+        for body_key, name_attr in (("lower_body", "lower_dof_names"), ("upper_body", "upper_dof_names")):
+            part_names = getattr(self.robot_config, name_attr, None)
+            if part_names:
+                self.body_part_full_dof_indices[body_key] = torch.tensor(
+                    [name_to_idx[n] for n in part_names],
+                    device=self.env.device,
+                    dtype=torch.long,
+                )
+
     def augment_observations(self, obs: torch.Tensor, env: Any, obs_list: Sequence[str]) -> torch.Tensor:
         """Applies x-z plane symmetry transformation for observation data augmentation.
 
@@ -211,7 +224,7 @@ class SymmetryUtils:
         mirrored_obs = self.mirror_xz_plane(obs, env, obs_list)
         return torch.cat((obs, mirrored_obs), dim=0)
 
-    def augment_actions(self, actions: torch.Tensor) -> torch.Tensor:
+    def augment_actions(self, actions: torch.Tensor, body_key: str | None = None) -> torch.Tensor:
         """Applies x-z plane symmetry transformation for action data augmentation.
 
         Parameters
@@ -219,6 +232,10 @@ class SymmetryUtils:
         actions : torch.Tensor
             Action tensor with shape [batch_size, action_dim].
             Contains robot actions to be augmented.
+        body_key : str | None
+            Body-part key (e.g. ``"lower_body"``) for decoupled multi-actor policies.
+            When set, mirroring is applied using the body-part-local permutation so the
+            action slice stays the same width.  ``None`` applies the full-DOF mirror.
 
         Returns
         -------
@@ -226,7 +243,7 @@ class SymmetryUtils:
             Augmented action tensor with doubled batch size.
             Original data is concatenated with mirrored data along batch dimension.
         """
-        mirrored_actions = self.mirror_action_xz_plane(actions)
+        mirrored_actions = self.mirror_action_xz_plane(actions, body_key=body_key)
         return torch.cat((actions, mirrored_actions), dim=0)
 
     def mirror_xz_plane(self, observation: torch.Tensor, env: Any, obs_list: Sequence[str]) -> torch.Tensor:
@@ -275,23 +292,18 @@ class SymmetryUtils:
 
         return mirrored_obs_all
 
-    def mirror_action_xz_plane(self, action: torch.Tensor) -> torch.Tensor:
-        """Performs x-z plane symmetry transformation on action tensor.
+    def mirror_action_xz_plane(self, action: torch.Tensor, body_key: str | None = None) -> torch.Tensor:
+        """Mirror an action tensor across the x-z plane.
 
-        Parameters
-        ----------
-        action : torch.Tensor
-            Input action tensor with shape [batch_size, n_dofs].
-            Contains joint position commands or torques with original action order [a0, a1, a2, ..., aN].
-
-        Returns
-        -------
-        torch.Tensor
-            Mirrored action tensor with same shape as input.
-            Joint mappings are applied and signs are flipped as appropriate.
-            Returns [a_mapped0 * sign0, a_mapped1 * sign1, ..., a_mappedN * signN] (mirrored and sign-flipped).
+        ``body_key`` selects a body-part slice (``"lower_body"`` / ``"upper_body"``)
+        for decoupled MA policies so the action slice stays the same width.  ``None``
+        mirrors the full-DOF action.
         """
-        return action[..., self.joint_index_map] * self.sign_flip_mask
+        if body_key is None:
+            return action[..., self.joint_index_map] * self.sign_flip_mask
+        part = self.body_part_full_dof_indices[body_key]
+        min_idx = int(part.min())
+        return action[..., self.joint_index_map[part] - min_idx] * self.sign_flip_mask[part]
 
     def mirror_obs_base_lin_vel(self, base_lin_vel: torch.Tensor) -> torch.Tensor:
         """Mirrors the base linear velocity in robot's base frame.
@@ -506,6 +518,60 @@ class SymmetryUtils:
             Outputs: [qd_mapped0 * sign0, qd_mapped1 * sign1, ..., qd_mappedN * signN] (mirrored and sign-flipped).
         """
         return dof_vel[..., self.joint_index_map] * self.sign_flip_mask
+
+    def mirror_obs_ref_upper_dof_pos(self, ref_upper_dof_pos: torch.Tensor) -> torch.Tensor:
+        """Mirrors the reference upper-body DOF positions.
+
+        Parameters
+        ----------
+        ref_upper_dof_pos : torch.Tensor
+            Reference upper-body DOF positions, layout follows ``env.upper_dof_indices``
+            (i.e. only the upper-body subset of the full DOF vector).
+
+        Returns
+        -------
+        torch.Tensor
+            Mirrored reference upper-body DOF positions, with left-right mapping and
+            sign flipping restricted to the upper-body DOF subset.
+        """
+        # ``env.upper_dof_indices`` indexes into the full DOF vector, while the obs
+        # term is already sliced to just the upper-body DOFs.  Re-index relative to
+        # the slice by subtracting the minimum upper-DOF index.  Mirrors FAR-FALCON-
+        # Terrains' ``mirror_obs_ref_upper_dof_pos`` (humanoidverse/envs/env_utils/symmetry.py).
+        upper_idx = self.env.upper_dof_indices.to(self.joint_index_map.device)
+        min_idx = int(upper_idx.min().item())
+        relative_map = self.joint_index_map[upper_idx] - min_idx
+        flip = self.sign_flip_mask[upper_idx]
+        return ref_upper_dof_pos[..., relative_map] * flip
+
+    def mirror_obs_height_measurements(self, height_measurements: torch.Tensor) -> torch.Tensor:
+        """Mirrors a height-scan grid across the x-z plane (i.e. flip the y axis).
+
+        The scan grid comes from ``TerrainLocomotion._init_height_scan_points`` with
+        ``meshgrid(x, y, indexing="ij")`` so the flattened layout is row-major over
+        ``(num_x, num_y)``.  Mirroring across the x-z plane flips the y dimension.
+
+        Parameters
+        ----------
+        height_measurements : torch.Tensor
+            Height-scan measurements shaped ``[..., num_x * num_y]`` (the single-frame
+            slice that :meth:`mirror_xz_plane` passes in).
+
+        Returns
+        -------
+        torch.Tensor
+            Mirrored height-scan measurements, same shape as input.
+        """
+        terrain = self.env.terrain_manager.terrain_term
+        nx = int(getattr(terrain, "num_height_scan_points_x", 0))
+        ny = int(getattr(terrain, "num_height_scan_points_y", 0))
+        if nx == 0 or ny == 0 or nx * ny != height_measurements.shape[-1]:
+            # Scan disabled or unexpected layout; return unchanged rather than corrupting data.
+            return height_measurements
+        lead_shape = height_measurements.shape[:-1]
+        grid = height_measurements.reshape(*lead_shape, nx, ny)
+        grid = torch.flip(grid, dims=[-1])
+        return grid.reshape(*lead_shape, nx * ny)
 
     def mirror_obs_actions(self, actions: torch.Tensor) -> torch.Tensor:
         """Mirrors the previous actions (same mapping as joint positions).

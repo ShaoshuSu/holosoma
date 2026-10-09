@@ -96,7 +96,7 @@ def ray_cast(ray_starts_world: torch.Tensor, ray_directions_world: torch.Tensor,
         ],
         device=wp_mesh.device,
     )
-    wp.synchronize()
+    wp.synchronize_device(wp_mesh.device)
     return ray_hits_world.view(shape)
 
 
@@ -158,7 +158,7 @@ def nearest_point(points: torch.Tensor, wp_mesh: wp.Mesh) -> torch.Tensor:
         inputs=[wp_mesh.id, points_wp, mesh_points_wp],
         device=wp_mesh.device,
     )
-    wp.synchronize()
+    wp.synchronize_device(wp_mesh.device)
     return mesh_points.view(shape)
 
 

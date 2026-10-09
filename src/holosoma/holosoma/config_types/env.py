@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic.dataclasses import dataclass
 
 from holosoma.config_types.action import ActionManagerCfg
+from holosoma.config_types.camera import CameraManagerCfg
 from holosoma.config_types.command import CommandManagerCfg
 from holosoma.config_types.curriculum import CurriculumManagerCfg
 from holosoma.config_types.experiment import ExperimentConfig, TrainingConfig
@@ -29,6 +30,7 @@ class EnvConfig:
     scene: SceneConfig
     sensors: dict[str, CameraSensorConfig]
     terrain: TerrainManagerCfg
+    camera: CameraManagerCfg
     observation: ObservationManagerCfg | None
     action: ActionManagerCfg | None
     reward: RewardManagerCfg | None
@@ -68,6 +70,7 @@ def get_tyro_env_config(tyro_config: ExperimentConfig) -> EnvConfig:
         sensors=dict(tyro_config.sensor),
         plugin=dict(tyro_config.plugin),
         terrain=tyro_config.terrain,
+        camera=tyro_config.camera,
         observation=tyro_config.observation,
         action=tyro_config.action,
         reward=tyro_config.reward,

@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 import trimesh
+from scipy.ndimage import binary_dilation
 
 from holosoma.config_types.terrain import TerrainTermCfg
 from holosoma.simulator.shared.terrain_types import TerrainInterface
@@ -130,11 +131,24 @@ class Terrain(TerrainInterface):
 
         self._height_field_raw: np.ndarray = np.zeros((self._tot_rows, self._tot_cols), dtype=np.int16)
         self._max_slope: float = self._cfg.max_slope
-        self.randomized_terrain()
+        # Per-(row, col) terrain type index, populated below. Used for
+        # per-env reward masking (see TerrainLocomotion.terrain_type_idx).
+        self._terrain_type_grid: np.ndarray = np.zeros((self._num_rows, self._num_cols), dtype=np.int64)
+        if getattr(self._cfg, "curriculum", True):
+            self.curriculum_terrain()
+        else:
+            self.randomized_terrain()
 
-        vertices, triangles = terrain_utils.convert_heightfield_to_trimesh(
+        vertices, triangles, x_edge_mask, y_edge_mask = terrain_utils.convert_heightfield_to_trimesh(
             self._height_field_raw, self._horizontal_scale, self._vertical_scale, self._slope_threshold
         )
+
+        edge_width_thresh = 0.05
+        half_edge_width = int(edge_width_thresh / self._horizontal_scale)
+        structure = np.ones((half_edge_width * 2 + 1, half_edge_width * 2 + 1))
+        self._x_edge_mask: np.ndarray = binary_dilation(x_edge_mask, structure=structure)
+        self._y_edge_mask: np.ndarray = binary_dilation(y_edge_mask, structure=structure)
+
         mesh: trimesh.Trimesh = trimesh.Trimesh(vertices=vertices, faces=triangles)
         mesh.vertices[..., :2] -= self._border_size
         return mesh
@@ -155,6 +169,43 @@ class Terrain(TerrainInterface):
     @property
     def mesh(self) -> trimesh.Trimesh:
         return self._mesh
+
+    @property
+    def terrain_type_names(self) -> list[str]:
+        """Ordered list of terrain type names present in this terrain.
+
+        Indices in :attr:`terrain_type_grid` refer into this list."""
+        return list(getattr(self, "_terrain_types", []))
+
+    @property
+    def terrain_type_grid(self) -> np.ndarray:
+        """Per-(row, col) terrain type index ``np.ndarray[int64]`` of shape ``(num_rows, num_cols)``."""
+        return getattr(self, "_terrain_type_grid", np.zeros((0, 0), dtype=np.int64))
+
+    @property
+    def x_edge_mask(self) -> np.ndarray | None:
+        return getattr(self, "_x_edge_mask", None)
+
+    @property
+    def y_edge_mask(self) -> np.ndarray | None:
+        return getattr(self, "_y_edge_mask", None)
+
+    @property
+    def horizontal_scale(self) -> float:
+        return self._horizontal_scale
+
+    @property
+    def vertical_scale(self) -> float:
+        return self._vertical_scale
+
+    @property
+    def height_field_raw(self) -> np.ndarray | None:
+        """Global int16 heightfield (``[tot_rows, tot_cols]``); ``None`` for plane / load_obj."""
+        return getattr(self, "_height_field_raw", None)
+
+    @property
+    def border_size(self) -> float:
+        return self._border_size
 
     def _get_load_obj_env_origin_grid(self) -> np.ndarray:
         grid = getattr(self, "_load_obj_origin_grid", None)
@@ -217,11 +268,43 @@ class Terrain(TerrainInterface):
 
             terrain_type = np.random.choice(self._terrain_types, p=proportions)
             difficulty = np.random.choice([0.5, 0.75, 0.9])
-            if terrain_type in {"smooth_slope", "rough_slope", "slope"}:
+            if terrain_type in {"smooth_slope", "rough_slope", "slope", "slopes"}:
                 difficulty = i / self._num_rows
             terrain = self.make_terrain(terrain_type, difficulty)
             self.add_terrain_to_map(terrain, int(i), int(j))
+            self._terrain_type_grid[int(i), int(j)] = self._terrain_types.index(terrain_type)
         print("\n generated all randomized terrains!")
+
+    def curriculum_terrain(self) -> None:
+        """Generate a column-partitioned curriculum grid (mirrors FAR-FALCON).
+
+        Each terrain type occupies a contiguous column range proportional to
+        its weight in ``terrain_config``. Within a column the difficulty is
+        ``row / num_rows`` so row 0 is easiest (≈ flat) and the last row is
+        hardest. This produces a smooth difficulty gradient identical to
+        FAR-FALCON's ``curriculum_terrain``.
+        """
+        proportions = np.array(self._terrain_proportions) / np.sum(self._terrain_proportions)
+        already_taken_prop = 0.0
+        end_col = 0
+        sub_terrain_dict: dict[str, tuple[int, int]] = {}
+        for ter, terrain_type in enumerate(self._terrain_types):
+            start_col = end_col
+            already_taken_prop += proportions[ter]
+            while end_col + 0.1 < self._num_cols * already_taken_prop:
+                end_col += 1
+            sub_terrain_dict[terrain_type] = (start_col, end_col)
+            print(f"{terrain_type} col: {start_col}:{end_col}")
+
+        for terrain_type, (start_col, end_col) in sub_terrain_dict.items():
+            type_idx = self._terrain_types.index(terrain_type)
+            for j in range(start_col, end_col):
+                for i in range(self._num_rows):
+                    difficulty = i / self._num_rows
+                    terrain = self.make_terrain(terrain_type, difficulty)
+                    self.add_terrain_to_map(terrain, int(i), int(j))
+                    self._terrain_type_grid[int(i), int(j)] = type_idx
+        print("generated all curriculum terrains!")
 
     def make_terrain(self, terrain_type: str, difficulty: float) -> Any:
         """Create a single sub-terrain of the specified type and difficulty.
@@ -411,6 +494,126 @@ class Terrain(TerrainInterface):
             terrain, min_height=-amplitude, max_height=amplitude, step=terrain.vertical_scale, downsampled_scale=0.2
         )
 
+    def _slope_up_terrain_func(self, terrain: Any, difficulty: float) -> None:
+        """Generate a pyramid slope that rises from the border toward the center.
+
+        Same pyramid construction as :meth:`_smooth_slope_terrain_func`, but the
+        slope direction is forced (never randomized). Used as a directional
+        counterpart of ``smooth_slope`` mirroring FAR-FALCON's
+        ``slope_up_terrain_func``.
+
+        Parameters
+        ----------
+        terrain : terrain_utils.SubTerrain
+            Terrain object with `height_field_raw` attribute to modify.
+        difficulty : float
+            Difficulty level in range [0, 1], controls slope steepness.
+        """
+        slope = -difficulty * self._max_slope
+        terrain_utils.pyramid_sloped_terrain(terrain, slope=slope, platform_size=self._cfg.platform_size)
+
+    def _slope_down_terrain_func(self, terrain: Any, difficulty: float) -> None:
+        """Generate a pyramid slope that descends from the border toward the center.
+
+        Directional counterpart of :meth:`_slope_up_terrain_func` mirroring
+        FAR-FALCON's ``slope_down_terrain_func``.
+
+        Parameters
+        ----------
+        terrain : terrain_utils.SubTerrain
+            Terrain object with `height_field_raw` attribute to modify.
+        difficulty : float
+            Difficulty level in range [0, 1], controls slope steepness.
+        """
+        slope = difficulty * self._max_slope
+        terrain_utils.pyramid_sloped_terrain(terrain, slope=slope, platform_size=self._cfg.platform_size)
+
+    def _slopes_terrain_func(self, terrain: Any, difficulty: float) -> None:
+        """Generate a pyramid slope, randomly upward or downward (50/50 per tile).
+
+        Mirrors FAR-FALCON-Terrains' slopes training, where ``slope_up`` and
+        ``slope_down`` are listed at equal proportions: each tile draws one of
+        the two directions independently. Implemented by dispatching to the
+        directional terrain functions so behaviour stays consistent.
+
+        With ``cfg.slopes_roughness`` the tile instead mirrors FAR-FALCON's
+        ``rough_slope_terrain_func`` (pyramid slope + uniform noise).
+        """
+        if getattr(self._cfg, "slopes_roughness", False):
+            self._falcon_rough_slope_terrain_func(terrain, difficulty)
+            return
+        if np.random.random() < 0.5:
+            self._slope_up_terrain_func(terrain, difficulty)
+        else:
+            self._slope_down_terrain_func(terrain, difficulty)
+
+    def _falcon_rough_slope_terrain_func(self, terrain: Any, difficulty: float) -> None:
+        """FAR-FALCON ``rough_slope_terrain_func`` (pyramid ``slope_type``).
+
+        Same RNG draw order as FALCON: amplitude, then direction.
+        """
+        slope = difficulty * self._max_slope
+        amplitude = np.random.uniform(self._cfg.amplitude_range[0], self._cfg.amplitude_range[1])
+        down = np.random.randint(0, 2) * 2 - 1
+        slope *= down
+        terrain_utils.pyramid_sloped_terrain(terrain, slope=slope, platform_size=self._cfg.platform_size)
+        terrain_utils.random_uniform_terrain(
+            terrain, min_height=-amplitude, max_height=amplitude, step=0.005, downsampled_scale=0.2
+        )
+
+    def _stairs_up_terrain_func(self, terrain: Any, difficulty: float) -> None:
+        """Generate pyramid stairs that step up from the border toward the center.
+
+        Directional counterpart of :meth:`_smooth_stairs_terrain_func` mirroring
+        FAR-FALCON's ``stairs_up_terrain_func``; the step direction is forced so
+        the central platform sits at the top of the staircase.
+
+        Parameters
+        ----------
+        terrain : terrain_utils.SubTerrain
+            Terrain object with `height_field_raw` attribute to modify.
+        difficulty : float
+            Difficulty level in range [0, 1], controls step height.
+        """
+        step_width = np.random.uniform(self._cfg.step_width_range[0], self._cfg.step_width_range[1])
+        if self._cfg.fixed_step_height > 0.0:
+            step_height = self._cfg.fixed_step_height
+        else:
+            step_height = self._cfg.stairs_offset + self._cfg.stairs_ratio * difficulty
+        terrain_utils.pyramid_stairs_terrain(
+            terrain,
+            step_width=step_width,
+            step_height=-step_height,
+            platform_size=self._cfg.platform_size,
+            random_step_height_range=tuple(self._cfg.random_step_height_range),
+        )
+
+    def _stairs_down_terrain_func(self, terrain: Any, difficulty: float) -> None:
+        """Generate pyramid stairs that step down from the border toward the center.
+
+        Directional counterpart of :meth:`_stairs_up_terrain_func` mirroring
+        FAR-FALCON's ``stairs_down_terrain_func``.
+
+        Parameters
+        ----------
+        terrain : terrain_utils.SubTerrain
+            Terrain object with `height_field_raw` attribute to modify.
+        difficulty : float
+            Difficulty level in range [0, 1], controls step height.
+        """
+        step_width = np.random.uniform(self._cfg.step_width_range[0], self._cfg.step_width_range[1])
+        if self._cfg.fixed_step_height > 0.0:
+            step_height = self._cfg.fixed_step_height
+        else:
+            step_height = self._cfg.stairs_offset + self._cfg.stairs_ratio * difficulty
+        terrain_utils.pyramid_stairs_terrain(
+            terrain,
+            step_width=step_width,
+            step_height=step_height,
+            platform_size=self._cfg.platform_size,
+            random_step_height_range=tuple(self._cfg.random_step_height_range),
+        )
+
     def _slope_terrain_func(self, terrain: Any, difficulty: float) -> None:
         """Generate a linear slope terrain with peak in the middle.
 
@@ -473,7 +676,8 @@ class Terrain(TerrainInterface):
         """Generate terrain with gaps and platforms in the center.
 
         Creates a central platform at ground level surrounded by gaps (depressions)
-        at random depth (0.4-0.6m). Gap size increases with difficulty from 0 to 0.5m.
+        at random depth (``gap_depth_range``, default 0.4-0.6m). Gap width increases
+        with difficulty from 0 to ``gap_size_max`` (default 0.5m).
         May create additional outer gaps/platforms if terrain is large enough.
         The pattern is symmetric around the center of the terrain.
 
@@ -485,7 +689,9 @@ class Terrain(TerrainInterface):
         difficulty : float
             Difficulty level in range [0, 1], controls gap size.
         """
-        gap_size = 0.5 * difficulty
+        gap_size_max = getattr(self._cfg, "gap_size_max", 0.5)
+        gap_depth_range = getattr(self._cfg, "gap_depth_range", [0.4, 0.6])
+        gap_size = gap_size_max * difficulty
         platform_size = self._cfg.platform_size
         gap_size = math.ceil(gap_size / terrain.horizontal_scale)
         platform_size = math.ceil(platform_size / terrain.horizontal_scale)
@@ -493,7 +699,7 @@ class Terrain(TerrainInterface):
         center_x = terrain.length // 2
         center_y = terrain.width // 2
 
-        depth = np.random.uniform(0.4, 0.6)
+        depth = np.random.uniform(gap_depth_range[0], gap_depth_range[1])
         depth = depth / terrain.vertical_scale
 
         # First gap rectangle
@@ -515,6 +721,52 @@ class Terrain(TerrainInterface):
 
         terrain.height_field_raw[center_x - x2 : center_x + x2, center_y - y2 : center_y + y2] = -depth
         terrain.height_field_raw[center_x - x1 : center_x + x1, center_y - y1 : center_y + y1] = 0
+
+    def _stepping_stones_columns_terrain_func(self, terrain: Any, difficulty: float) -> None:
+        """Generate stepping stones laid out as two centered rows/columns.
+
+        Mirrors FAR-FALCON's ``stepping_stone_terrain_func`` with
+        ``stone_type="columns"`` and ``num_columns=2``: stones are arranged in a
+        deterministic pair of centered rows and a pair of centered columns, with
+        a flat platform at the center. Stone size and spacing scale with
+        difficulty.
+
+        Parameters
+        ----------
+        terrain : terrain_utils.SubTerrain
+            Terrain object with `width`, `length`, `horizontal_scale`, `vertical_scale`,
+            and `height_field_raw` attributes.
+        difficulty : float
+            Difficulty level in range [0, 1]: smaller, more spaced stones at
+            higher difficulty.
+        """
+        num_columns = 2
+        stone_size_range = self._cfg.stone_size_range
+        stone_distance_row_range = self._cfg.stone_distance_row_range
+        stone_distance_col_range = self._cfg.stone_distance_col_range
+        stone_height_range = self._cfg.stone_height_range
+        depth_range = self._cfg.stone_depth_range
+
+        stone_size = stone_size_range[1] + difficulty * (stone_size_range[0] - stone_size_range[1])
+        stone_distance_row = stone_distance_row_range[0] + difficulty * (
+            stone_distance_row_range[1] - stone_distance_row_range[0]
+        )
+        stone_distance_col = stone_distance_col_range[0] + difficulty * (
+            stone_distance_col_range[1] - stone_distance_col_range[0]
+        )
+        stone_height = np.random.uniform(stone_height_range[0], stone_height_range[1])
+        depth = -np.random.uniform(depth_range[0], depth_range[1])
+
+        terrain_utils.stepping_stones_columns_terrain(
+            terrain,
+            stone_size=stone_size,
+            stone_distance_row=stone_distance_row,
+            stone_distance_col=stone_distance_col,
+            max_height=stone_height,
+            platform_size=self._cfg.platform_size,
+            depth=depth,
+            num_columns=num_columns,
+        )
 
     def _stepping_stone_terrain_func(self, terrain: Any, difficulty: float) -> None:
         """Generate terrain with stepping stones and gaps with a central platform.

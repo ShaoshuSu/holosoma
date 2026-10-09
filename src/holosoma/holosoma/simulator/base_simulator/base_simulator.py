@@ -166,6 +166,8 @@ class BaseSimulator:
 
         """
         self.terrain_manager = terrain_manager
+        # Set by the env when it owns a CameraManager; only used for debug drawing here.
+        self.camera_manager: Any = None
         self.training_config = tyro_config.training
         self.simulator_config = tyro_config.simulator
         self.scene_config = tyro_config.scene
@@ -518,7 +520,10 @@ class BaseSimulator:
         raise NotImplementedError("The 'get_dof_forces' method must be implemented in subclasses.")
 
     def draw_debug_viz(self):
-        pass
+        if self.terrain_manager is not None:
+            self.terrain_manager.draw_debug_viz()
+        if self.camera_manager is not None:
+            self.camera_manager.draw_debug_viz()
 
     # ----- Camera Controller Helper Methods -----
 

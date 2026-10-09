@@ -29,10 +29,10 @@ def contact_forces_exceeded(
     return torch.any(torch.norm(contact_forces, dim=-1) > force_threshold, dim=1)
 
 
-def gravity_tilt_exceeded(env, threshold_x: float, threshold_y: float) -> torch.Tensor:
+def gravity_tilt_exceeded(
+    env, threshold_x: float, threshold_y: float
+) -> torch.Tensor:
     """Terminate if projected gravity exceeds roll/pitch thresholds."""
-    if not getattr(env.config.termination, "terminate_by_gravity", False):
-        return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
     grav = get_projected_gravity(env)
     tilt_x = torch.abs(grav[:, 0]) > threshold_x
     tilt_y = torch.abs(grav[:, 1]) > threshold_y
@@ -40,17 +40,35 @@ def gravity_tilt_exceeded(env, threshold_x: float, threshold_y: float) -> torch.
 
 
 def base_height_below_threshold(env, min_height: float) -> torch.Tensor:
-    """Terminate if base height drops below threshold."""
-    if not getattr(env.config.termination, "terminate_by_low_height", False):
-        return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-    base_height = env.simulator.robot_root_states[:, 2]
-    return base_height < min_height
+    """Terminate if the pelvis sits less than ``min_height`` m above the terrain.
+
+    Uses the terrain-aware pelvis-above-ground height from the locomotion terrain
+    term when available (``TerrainLocomotion.base_heights`` — computed by a
+    downward ray cast at the pelvis), matching FAR-FALCON's
+    ``_get_base_heights`` semantics. On terrains where no terrain state exists
+    (``plane`` / ``none``) or the state doesn't expose ``base_heights``, falls
+    back to comparing the pelvis world-Z directly against ``min_height``.
+
+    Without this fix, spawning onto a lower stair of a high-difficulty
+    ``stairs_up`` tile (world-Z of the local step goes negative) would
+    immediately trip a world-Z-based threshold even though the robot is
+    standing normally on the stair.
+    """
+    terrain_state = None
+    manager = getattr(env, "terrain_manager", None)
+    if manager is not None:
+        try:
+            terrain_state = manager.get_state("locomotion_terrain")
+        except Exception:
+            terrain_state = None
+    base_heights = getattr(terrain_state, "base_heights", None)
+    if base_heights is None or not hasattr(base_heights, "numel") or base_heights.numel() == 0:
+        base_heights = env.simulator.robot_root_states[:, 2]
+    return base_heights < min_height
 
 
 def dof_position_limit_exceeded(env, probability: float = 1.0) -> torch.Tensor:
     """Terminate when DOF position limits are exceeded."""
-    if not getattr(env.config.termination, "terminate_when_close_to_dof_pos_limit", False):
-        return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
     lower_violation = -(env.simulator.dof_pos - env.simulator.dof_pos_limits_termination[:, 0]).clip(max=0.0)
     upper_violation = (env.simulator.dof_pos - env.simulator.dof_pos_limits_termination[:, 1]).clip(min=0.0)
     violation = torch.sum(lower_violation + upper_violation, dim=1) > 0.0
@@ -59,8 +77,6 @@ def dof_position_limit_exceeded(env, probability: float = 1.0) -> torch.Tensor:
 
 def dof_velocity_limit_exceeded(env, probability: float = 1.0) -> torch.Tensor:
     """Terminate when DOF velocity limits are exceeded."""
-    if not getattr(env.config.termination, "terminate_when_close_to_dof_vel_limit", False):
-        return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
     delta = (
         torch.abs(env.simulator.dof_vel)
         - env.dof_vel_limits * env.config.termination_scales.termination_close_to_dof_vel_limit
@@ -71,8 +87,6 @@ def dof_velocity_limit_exceeded(env, probability: float = 1.0) -> torch.Tensor:
 
 def torque_limit_exceeded(env, probability: float = 1.0) -> torch.Tensor:
     """Terminate when actuator torques exceed limits."""
-    if not getattr(env.config.termination, "terminate_when_close_to_torque_limit", False):
-        return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
     torques = env.action_manager.get_term("joint_control").torques
     delta = (
         torch.abs(torques) - env.torque_limits * env.config.termination_scales.termination_close_to_torque_limit

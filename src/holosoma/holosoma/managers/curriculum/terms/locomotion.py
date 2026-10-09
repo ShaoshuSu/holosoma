@@ -221,6 +221,135 @@ class PenaltyCurriculum(CurriculumTermBase):
             self.env.reward_manager.set_term_cfg(name, scaled_cfg)
 
 
+class TerrainCurriculum(CurriculumTermBase):
+    """RPL-style locomotion terrain curriculum based on traveled distance."""
+
+    def __init__(self, cfg: Any, env: Any):
+        super().__init__(cfg, env)
+        params = cfg.params or {}
+        self.enabled = bool(params.get("enabled", True))
+        self.move_up_ratio = float(params.get("terrain_move_up_ratio", 0.5))
+        self.move_down_ratio = float(params.get("terrain_move_down_ratio", 0.5))
+
+    def setup(self) -> None:
+        return
+
+    def reset(self, env_ids) -> None:
+        if not self.enabled:
+            return
+        idx = self._ensure_index_tensor(env_ids)
+        if idx.numel() == 0 or not getattr(self.env, "init_done", False):
+            return
+
+        terrain_state = self.env.terrain_manager.get_state("locomotion_terrain")
+        terrain_cfg = self.env.terrain_manager.cfg.terrain_term
+        if terrain_state is None or str(terrain_cfg.mesh_type) == "plane":
+            return
+
+        distance = torch.norm(
+            self.env.simulator.robot_root_states[idx, :2] - terrain_state.env_origins[idx, :2],
+            dim=1,
+        )
+        move_up = distance > terrain_cfg.terrain_length * self.move_up_ratio
+        move_down = (
+            distance
+            < torch.norm(self.env.command_manager.commands[idx, :2], dim=1)
+            * self.env.max_episode_length_s
+            * self.move_down_ratio
+        ) & ~move_up
+
+        new_levels = terrain_state.terrain_levels[idx] + move_up.to(torch.long) - move_down.to(torch.long)
+        max_level = max(int(terrain_state.max_terrain_level), 1)
+        new_levels = torch.where(
+            new_levels >= max_level,
+            torch.randint_like(new_levels, max_level),
+            torch.clamp(new_levels, min=0),
+        )
+        terrain_state.set_terrain_levels(idx, new_levels)
+
+    def step(self) -> None:
+        return
+
+    def _ensure_index_tensor(self, env_ids) -> torch.Tensor:
+        if env_ids is None:
+            return torch.arange(self.env.num_envs, device=self.env.device, dtype=torch.long)
+        if isinstance(env_ids, torch.Tensor):
+            return env_ids.to(device=self.env.device, dtype=torch.long)
+        return torch.as_tensor(list(env_ids), device=self.env.device, dtype=torch.long)
+
+
+class DomainRandScaleCurriculum(CurriculumTermBase):
+    """Scale domain randomization ranges based on average episode length.
+
+    Mirrors FAR-FALCON's ``domain_rand_scale_curriculum``: when episodes are
+    short, shrink the DR ranges to make the task easier; as episodes get
+    longer, expand the ranges up to ``max_scale``. The scale is exposed on
+    the env as ``env.domain_rand_scale`` so randomization terms can read it.
+
+    Terms that honor ``env.domain_rand_scale`` (if present):
+      - Height-measurement XY offset range (:class:`HeightMeasurementXYOffsetRandomizer`),
+        via an explicit ``set_curriculum_scale`` propagation.
+      - Control delay step range (``randomize_action_delay`` reads
+        ``env.domain_rand_scale`` directly each reset, matching FALCON-Terrains).
+
+    Tuning params (mirrors FAR-FALCON's YAML knobs):
+      - enabled: toggle the curriculum
+      - initial_scale: starting value of ``domain_rand_scale``
+      - min_scale / max_scale: clamp
+      - level_down_threshold: shrink range below this epl
+      - level_up_threshold: grow range above this epl
+      - degree: multiplicative rate per update
+    """
+
+    def __init__(self, cfg: Any, env: Any):
+        super().__init__(cfg, env)
+        params = cfg.params or {}
+        self.enabled: bool = bool(params.get("enabled", False))
+        self.initial_scale: float = float(params.get("initial_scale", 0.1))
+        self.min_scale: float = float(params.get("min_scale", 0.0))
+        self.max_scale: float = float(params.get("max_scale", 1.0))
+        self.level_down_threshold: float = float(params.get("level_down_threshold", 40.0))
+        self.level_up_threshold: float = float(params.get("level_up_threshold", 210.0))
+        self.degree: float = float(params.get("degree", 0.000025))
+        self.current_scale: float = self.initial_scale
+
+    def setup(self) -> None:
+        if not self.enabled:
+            # Still advertise scale=1 so consumers get a consistent attribute.
+            self.env.use_domain_rand_scale_curriculum = False
+            self.env.domain_rand_scale = 1.0
+            return
+        self.env.use_domain_rand_scale_curriculum = True
+        self.env.domain_rand_scale = self.current_scale
+        self._propagate()
+
+    def reset(self, env_ids) -> None:
+        if not self.enabled:
+            return
+        avg = float(self.env.average_episode_length)
+        if avg < self.level_down_threshold:
+            self.current_scale *= 1.0 - self.degree
+        elif avg > self.level_up_threshold:
+            self.current_scale *= 1.0 + self.degree
+        self.current_scale = float(np.clip(self.current_scale, self.min_scale, self.max_scale))
+        self.env.domain_rand_scale = self.current_scale
+        self._propagate()
+        if hasattr(self.env, "log_dict"):
+            self.env.log_dict["domain_rand_scale"] = torch.tensor(self.current_scale, dtype=torch.float)
+
+    def step(self) -> None:
+        return
+
+    def _propagate(self) -> None:
+        """Push the current scale to any randomization term that cares."""
+        rm = getattr(self.env, "randomization_manager", None)
+        if rm is None:
+            return
+        hm_term = rm.get_state("height_measurements_xy_offset")
+        if hm_term is not None and hasattr(hm_term, "set_curriculum_scale"):
+            hm_term.set_curriculum_scale(self.current_scale)
+
+
 # ================================================================================================
 # Legacy stateless functions (backward compatibility)
 # ================================================================================================
@@ -372,3 +501,4 @@ def clamp_reward_penalty(env, **_) -> None:
         term_cfg = env.reward_manager.get_term_cfg(name)
         scaled_cfg = replace(term_cfg, weight=original_weights[name] * current_scale)
         env.reward_manager.set_term_cfg(name, scaled_cfg)
+
