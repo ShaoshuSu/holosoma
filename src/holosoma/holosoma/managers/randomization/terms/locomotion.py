@@ -295,30 +295,30 @@ class HeightMeasurementXYOffsetRandomizer(RandomizationTermBase):
         self.scale: float = 1.0
         self._offsets: torch.Tensor | None = None
 
-    def setup(self) -> None:
+    def setup(self, sampler: TermSampler) -> None:
         if not self.enabled:
             return
         self._offsets = torch.zeros(self.env.num_envs, device=self.env.device, dtype=torch.long)
-        self._resample(torch.arange(self.env.num_envs, device=self.env.device, dtype=torch.long))
+        self._resample(torch.arange(self.env.num_envs, device=self.env.device, dtype=torch.long), sampler)
         self._push_to_terrain()
 
-    def reset(self, env_ids) -> None:
+    def reset(self, env_ids: torch.Tensor | None, sampler: TermSampler) -> None:
         if not self.enabled or self._offsets is None:
             return
         idx = _ensure_env_ids_tensor(self.env, env_ids)
         if idx.numel() == 0:
             return
-        self._resample(idx)
+        self._resample(idx, sampler)
         self._push_to_terrain()
 
-    def step(self) -> None:
+    def step(self, sampler: TermSampler) -> None:
         return
 
     def set_curriculum_scale(self, scale: float) -> None:
         """Scale the randomization range. Called by the DR curriculum each reset."""
         self.scale = float(scale)
 
-    def _resample(self, env_ids: torch.Tensor) -> None:
+    def _resample(self, env_ids: torch.Tensor, sampler: TermSampler) -> None:
         if self._offsets is None:
             return
         lo = self._scale_range(self.range[0] * self.scale)
@@ -327,13 +327,8 @@ class HeightMeasurementXYOffsetRandomizer(RandomizationTermBase):
         if hi == lo:
             self._offsets[env_ids] = lo
             return
-        self._offsets[env_ids] = torch.randint(
-            lo,
-            hi + 1,
-            (env_ids.shape[0],),
-            device=self.env.device,
-            dtype=self._offsets.dtype,
-        )
+        # Keyed per-(env, episode) integer draw in [lo, hi] inclusive.
+        self._offsets[env_ids] = sampler.draw_int(lo, hi, env_ids=env_ids.cpu()).to(self.env.device)
 
     def _push_to_terrain(self) -> None:
         terrain = None

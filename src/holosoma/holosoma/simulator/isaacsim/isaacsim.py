@@ -12,6 +12,7 @@ import pathlib
 import trimesh
 
 from holosoma.config_types.full_sim import FullSimConfig
+from holosoma.utils import terrain_utils
 import isaaclab.sim as sim_utils
 import isaaclab.terrains as terrain_gen
 import isaacsim.core.utils.stage as stage_utils
@@ -101,6 +102,138 @@ BODY_NAME_ALIASES = {
     "left_foot_contact_point": "left_ankle_roll_link",
     "right_foot_contact_point": "right_ankle_roll_link",
 }
+
+
+def _spawn_static_terrain_tile(
+    prim_path: str,
+    mesh: trimesh.Trimesh,
+    *,
+    visual_material: sim_utils.PreviewSurfaceCfg,
+    physics_material: sim_utils.RigidBodyMaterialCfg,
+) -> None:
+    """Spawn one terrain tile with kinematic rigid-body collision."""
+    create_prim_from_mesh(
+        prim_path,
+        mesh,
+        visual_material=visual_material,
+        physics_material=physics_material,
+        translation=(0.0, 0.0, 0.0),
+    )
+    sim_utils.define_rigid_body_properties(
+        prim_path,
+        sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True, disable_gravity=True),
+    )
+
+
+def _spawn_heightfield_terrain_tiles(
+    base_prim_path: str,
+    terrain: Any,
+    *,
+    visual_material: sim_utils.PreviewSurfaceCfg,
+    physics_material: sim_utils.RigidBodyMaterialCfg,
+) -> list[str]:
+    """Spawn per-sub-terrain meshes so PhysX can cook collision (full mesh is too large)."""
+    prim_paths: list[str] = []
+    hf = terrain._height_field_raw
+    border = int(terrain._border)
+    length_px = int(terrain._length_per_env_pixels)
+    width_px = int(terrain._width_per_env_pixels)
+
+    num_rows = int(terrain._num_rows)
+    num_cols = int(terrain._num_cols)
+    for row in range(num_rows):
+        for col in range(num_cols):
+            # Include one shared heightfield sample on interior edges so adjacent
+            # tiles meet at env_length/env_width spacing (avoids horizontal_scale gaps).
+            row_end_extra = 1 if row < num_rows - 1 else 0
+            col_end_extra = 1 if col < num_cols - 1 else 0
+            hf_tile = hf[
+                border + row * length_px : border + (row + 1) * length_px + row_end_extra,
+                border + col * width_px : border + (col + 1) * width_px + col_end_extra,
+            ]
+            vertices, triangles, _, _ = terrain_utils.convert_heightfield_to_trimesh(
+                hf_tile,
+                terrain._horizontal_scale,
+                terrain._vertical_scale,
+                terrain._slope_threshold,
+            )
+            tile_mesh = trimesh.Trimesh(vertices=vertices, faces=triangles)
+            tile_mesh.vertices[:, 0] += row * terrain._env_length
+            tile_mesh.vertices[:, 1] += col * terrain._env_width
+
+            tile_prim_path = f"{base_prim_path}/tile_{row}_{col}"
+            _spawn_static_terrain_tile(
+                tile_prim_path,
+                tile_mesh,
+                visual_material=visual_material,
+                physics_material=physics_material,
+            )
+            prim_paths.append(tile_prim_path)
+
+    return prim_paths
+
+
+def _spawn_ground_plane_collision(
+    prim_path: str,
+    *,
+    physics_material: sim_utils.RigidBodyMaterialCfg,
+) -> str:
+    """Fallback infinite ground plane when mesh collision cannot be cooked."""
+    ground_plane_cfg = sim_utils.GroundPlaneCfg(
+        physics_material=physics_material,
+        size=(2.0e6, 2.0e6),
+        color=(0.0, 0.0, 0.0),
+    )
+    ground_plane_cfg.func(prim_path, ground_plane_cfg)
+    return prim_path
+
+
+def _spawn_trimesh_terrain(
+    base_prim_path: str,
+    terrain: Any,
+    mesh_type: str,
+    *,
+    visual_material: sim_utils.PreviewSurfaceCfg,
+    physics_material: sim_utils.RigidBodyMaterialCfg,
+) -> list[str]:
+    """Spawn Isaac Sim terrain collision. Returns prim paths for filter_collisions."""
+    if mesh_type == "trimesh" and hasattr(terrain, "_height_field_raw"):
+        tile_prims = _spawn_heightfield_terrain_tiles(
+            base_prim_path,
+            terrain,
+            visual_material=visual_material,
+            physics_material=physics_material,
+        )
+        logger.info(
+            "Spawned {} heightfield terrain tiles under {} (per-tile PhysX collision)",
+            len(tile_prims),
+            base_prim_path,
+        )
+        return [base_prim_path]
+
+    # load_obj and other mesh-only terrains: visual mesh + infinite ground plane for physics.
+    create_prim_from_mesh(
+        base_prim_path,
+        terrain.mesh,
+        visual_material=visual_material,
+        physics_material=physics_material,
+        translation=(0.0, 0.0, 0.0),
+    )
+    mesh_prim_path = f"{base_prim_path}/mesh"
+    sim_utils.define_collision_properties(
+        mesh_prim_path,
+        sim_utils.CollisionPropertiesCfg(collision_enabled=False),
+    )
+    plane_prim = _spawn_ground_plane_collision(
+        f"{base_prim_path}_physics",
+        physics_material=physics_material,
+    )
+    logger.warning(
+        "Using ground-plane physics fallback for {} terrain at {} (mesh collision disabled)",
+        mesh_type,
+        base_prim_path,
+    )
+    return [base_prim_path, plane_prim]
 
 
 class IsaacSim(BaseSimulator):
@@ -505,15 +638,14 @@ class IsaacSim(BaseSimulator):
                 restitution=terrain_state.restitution,
             )
 
-            create_prim_from_mesh(
+            terrain_collision_prims = _spawn_trimesh_terrain(
                 terrain_prim_path,
-                self.terrain.mesh,
+                self.terrain,
+                terrain_state.mesh_type,
                 visual_material=visual_material,
                 physics_material=physics_material,
-                translation=(0.0, 0.0, 0.0),
             )
-            global_collision_prims.append(terrain_prim_path)
-            print("[INFO] Successfully created custom terrain mesh")
+            global_collision_prims.extend(terrain_collision_prims)
         else:
             raise ValueError(f"Unsupported terrain mesh type: {terrain_state.mesh_type}")
 
@@ -882,6 +1014,13 @@ class IsaacSim(BaseSimulator):
         # passed origins ARE the placement) — so callers reading sim.env_origins (e.g. a multi-env
         # camera harness pinning a robot relative to its env) landed off from the grid-placed scene.
         # Reconcile to the real grid so sim.env_origins means the same thing on every backend.
+        # Terrain-defined origins (heightfield tiles / terrain curriculum) must also place the
+        # scene's envs, otherwise robots spawn on the scene grid instead of their tiles.
+        terrain_state = self.terrain_manager.get_state("locomotion_terrain") if self.terrain_manager else None
+        if getattr(terrain_state, "custom_origins", False) and getattr(terrain_state, "mesh_type", None) == "trimesh":
+            self.scene.env_origins.copy_(
+                env_origins.to(device=self.scene.env_origins.device, dtype=self.scene.env_origins.dtype)
+            )
         self.env_origins = self.scene.env_origins
         self.base_init_state = base_init_state
 
@@ -909,6 +1048,23 @@ class IsaacSim(BaseSimulator):
             self.dof_pos_limits[i, 0] = m - 0.5 * r * self.robot_config.soft_dof_pos_limit
             self.dof_pos_limits[i, 1] = m + 0.5 * r * self.robot_config.soft_dof_pos_limit
         return self.dof_pos_limits, self.dof_vel_limits, self.torque_limits
+
+    def find_rigid_body_indice_global(self, body_name):
+        """Return the raw body index into the full ``body_pos_w`` / ``body_quat_w`` tensors.
+
+        Unlike :meth:`find_rigid_body_indice`, this does **not** remap through
+        ``self.body_ids`` (the subset selected by ``robot_config.body_names``).
+        Use this when you need to index into ``_rigid_body_pos_global`` /
+        ``_rigid_body_rot_global``.
+        """
+        indices, names = self._robot.find_bodies(body_name)
+        if len(indices) == 0:
+            logger.warning(f"Body {body_name} not found on the robot.")
+            return None
+        if len(indices) == 1:
+            return indices[0]
+        logger.warning(f"Multiple bodies found for {body_name}.")
+        return indices
 
     def find_rigid_body_indice(self, body_name):
         """
@@ -1080,6 +1236,11 @@ class IsaacSim(BaseSimulator):
         self._rigid_body_vel = self._robot.data.body_lin_vel_w[:, self.body_ids, :]
         self._rigid_body_ang_vel = self._robot.data.body_ang_vel_w[:, self.body_ids, :]
 
+        # Full (unfiltered) body state for consumers that need bodies outside
+        # the ``robot_config.body_names`` subset (e.g. warp camera dynamic meshes).
+        self._rigid_body_pos_global = self._robot.data.body_pos_w
+        self._rigid_body_rot_global = self._robot.data.body_quat_w[:, :, [1, 2, 3, 0]]
+
     def clear_contact_forces_history(self, env_ids: torch.Tensor) -> None:
         if len(env_ids) > 0:
             self.contact_forces_history[env_ids, :, :, :] = 0.0
@@ -1146,6 +1307,7 @@ class IsaacSim(BaseSimulator):
     def draw_debug_viz(self):
         if self.virtual_gantry:
             self.virtual_gantry.draw_debug()
+        super().draw_debug_viz()
 
     def simulate_at_each_physics_step(self):
         self._sim_step_counter += 1

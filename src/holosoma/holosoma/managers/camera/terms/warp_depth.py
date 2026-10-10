@@ -33,6 +33,7 @@ from holosoma.managers.camera.terms.warp_kernels import (
     depth_range_kernel,
     depth_range_per_env_fov_kernel,
 )
+from holosoma.utils.path import resolve_data_file_path
 from holosoma.utils.rotations import quat_apply, quat_from_euler_xyz, quat_mul
 
 DEFAULT_EULER_FRAME_ROT_DEG = [-90.0, 0.0, -90.0]
@@ -123,7 +124,8 @@ class WarpDepthCamera(CameraTermBase):
         Robot-body ray casting for self-occlusion.  Keys:
         ``enable`` (bool, default ``False``),
         ``body_meshes`` (dict mapping *mesh_file* -> *body_name*),
-        ``meshes_root`` (str, base directory for the mesh files).
+        ``meshes_root`` (str, base directory for the mesh files; ``@holosoma/...`` package
+        paths are resolved against the installed holosoma package).
         When enabled the depth kernel also casts against per-environment
         body meshes whose poses are updated from the rigid-body state
         every :meth:`step`.
@@ -496,6 +498,9 @@ class WarpDepthCamera(CameraTermBase):
         """Load robot body meshes and resolve their rigid-body indices."""
         body_meshes: dict[str, str] = self.dyna_cfg.get("body_meshes", {})
         meshes_root: str = self.dyna_cfg.get("meshes_root", "")
+        if meshes_root:
+            # Accept "@holosoma/..." package paths as well as absolute / CWD-relative ones.
+            meshes_root = resolve_data_file_path(meshes_root)
 
         self._robot_wp_meshes: list[wp.Mesh] = []
         self._dyna_body_indices: list[int] = []
