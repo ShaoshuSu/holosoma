@@ -604,6 +604,8 @@ class TerrainLocomotion(TerrainTermBase):
         return heights.view(num_envs, p).to(torch.float32) * self._terrain.vertical_scale
 
     def draw_debug_viz(self):
+        if not hasattr(self, "_ray_hits_world_base"):
+            return  # setup() not run (e.g. run_sim, which uses the terrain only for the scene)
         env_id = 0
 
         # Base height hit (single red sphere)

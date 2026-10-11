@@ -174,3 +174,39 @@ def test_crop_that_removes_everything_fails_loud() -> None:
     cfg = _d435i_config(crop_top=RENDER_H)
     with pytest.raises(ValueError, match="crop removed the whole"):
         _plugin(cfg)._resize_clip_normalize(np.zeros((RENDER_H, RENDER_W), dtype=np.float32))
+
+
+def _falcon_image_server_reference(depth: npt.NDArray[np.float32], cfg: DepthShmPluginConfig) -> npt.NDArray[np.float32]:
+    """FAR-FALCON-Terrains' sim2sim ``ImageServer`` transform: cv2 resize, clamp, normalize."""
+    import cv2
+
+    near, far = cfg.near_clip, cfg.far_clip
+    resized = cv2.resize(depth, (cfg.resized_width, cfg.resized_height))
+    return ((np.clip(resized, near, far) - near) / (far - near) - 0.5).astype(np.float32)
+
+
+def test_cv2_linear_mode_matches_falcon_image_server() -> None:
+    pytest.importorskip("cv2")
+    cfg = _d435i_config(
+        resized_width=48,
+        resized_height=27,
+        crop_top=0,
+        crop_left=0,
+        crop_right=0,
+        near_clip=0.1,
+        far_clip=2.0,
+        empty_threshold=0.0,
+        resize_mode="cv2_linear",
+        clip_before_resize=False,
+    )
+    rng = np.random.default_rng(0)
+    depth = rng.uniform(0.0, 4.0, size=(135, 240)).astype(np.float32)
+    got = _plugin(cfg)._resize_clip_normalize(depth)
+    np.testing.assert_allclose(got, _falcon_image_server_reference(depth, cfg), atol=1e-6)
+    assert got.min() >= -0.5 and got.max() <= 0.5
+
+
+def test_cameras_list_validation() -> None:
+    with pytest.raises(ValueError, match="duplicates"):
+        _d435i_config(cameras=["front", "front"])
+    assert _d435i_config(camera="", cameras=["front", "back"]).cameras == ["front", "back"]

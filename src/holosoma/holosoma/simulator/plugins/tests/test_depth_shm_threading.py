@@ -458,3 +458,19 @@ def test_inference_monitor_tracks_the_sim_producer(
         assert gone.state == heartbeat.STATE_FAILED
     finally:
         monitor.close()
+
+
+def test_multiple_cameras_share_one_block(accept_fake_backend: None) -> None:
+    """``cameras`` publishes ``[num_cameras, 1, H, W]`` in config order, all off the control loop."""
+    sim = _FakeSimulator()
+    sim.sensor_manager.register_camera("back", _camera_config())
+    sim.sensor_config["back"] = _camera_config()
+    p = DepthShmPlugin(_config(camera="", cameras=[CAM, "back"]), cast("BaseSimulator", sim))
+    try:
+        sim.hooks.emit(Phase.EPISODE_START, 0)
+        assert p._array is not None
+        assert p._array.shape == (2, 1, 58, 87)
+        assert all(sim.sensor_manager.collect_due() == [] for _ in range(20))
+        assert np.isfinite(p._array).all()
+    finally:
+        p.stop()

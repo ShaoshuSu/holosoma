@@ -411,7 +411,11 @@ class DepthShmPluginConfig(PluginConfig):
     which is also the policy's default."""
 
     camera: str = ""
-    """Name of the configured camera to publish. Required."""
+    """Name of the configured camera to publish. Required unless ``cameras`` is set."""
+
+    cameras: list[str] = dc_field(default_factory=list)
+    """Several cameras published into ONE block of shape ``[len(cameras), 1, H, W]``, in this
+    order (e.g. FALCON-Terrains' front + back depth rig). Overrides ``camera`` when non-empty."""
 
     env_id: int = 0
     """Which environment's view to publish."""
@@ -467,6 +471,15 @@ class DepthShmPluginConfig(PluginConfig):
     The consuming policy polls shared memory at its own rate and simply re-reads the latest frame,
     so a rate below the control rate means repeated frames rather than stalls."""
 
+    resize_mode: Literal["bicubic_antialias", "cv2_linear"] = "bicubic_antialias"
+    """``bicubic_antialias``: torch bicubic with antialiasing (training's resize). ``cv2_linear``:
+    ``cv2.resize`` with its default interpolation, as FAR-FALCON-Terrains' sim2sim image server
+    does — for an integer downscale this samples pixel centres without low-pass filtering."""
+
+    clip_before_resize: bool = True
+    """Clamp to ``[near_clip, far_clip]`` before the resize (training's order). FAR-FALCON-Terrains'
+    sim2sim clamps after the resize instead."""
+
     latency_frames: int = 0
     """Publish the frame this many steps old, modeling real camera/transport delay.
 
@@ -484,8 +497,10 @@ class DepthShmPluginConfig(PluginConfig):
 
     @model_validator(mode="after")
     def validate_depth_shm(self) -> DepthShmPluginConfig:
-        if not self.camera:
-            raise ValueError("DepthShmPluginConfig.camera must name a configured camera.")
+        if not self.camera and not self.cameras:
+            raise ValueError("DepthShmPluginConfig.camera (or cameras) must name a configured camera.")
+        if len(set(self.cameras)) != len(self.cameras):
+            raise ValueError(f"DepthShmPluginConfig.cameras has duplicates: {self.cameras}.")
         if self.resized_width <= 0 or self.resized_height <= 0:
             raise ValueError(
                 f"DepthShmPluginConfig resized dims must be positive, got "

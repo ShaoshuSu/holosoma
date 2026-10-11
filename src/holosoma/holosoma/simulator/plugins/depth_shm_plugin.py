@@ -90,7 +90,10 @@ def heartbeat_message(seq: int, state: str) -> bytes:
 
 
 class DepthShmPlugin(CameraConsumerPlugin):
-    """Write normalized depth for one camera into a shared-memory block.
+    """Write normalized depth for one or more cameras into a shared-memory block.
+
+    The block is ``[num_cameras, 1, H, W]`` in ``cfg.cameras`` order (``[1, 1, H, W]`` for the
+    single ``cfg.camera``).
 
     Renders on a background thread at ``cfg.render_hz`` (see the module docstring); the
     ``FRAME_END`` hook is left unused so the physics loop pays nothing for the camera.
@@ -101,11 +104,11 @@ class DepthShmPlugin(CameraConsumerPlugin):
     def __init__(self, config: DepthShmPluginConfig, simulator: BaseSimulator) -> None:
         _require_classic_backend(simulator, allow_uninitialized=True)
         # Read by wanted_streams(), which the base calls during __init__.
-        self._camera = config.camera
+        self._cameras = list(config.cameras) if config.cameras else [config.camera]
         self._env_id = config.env_id
         super().__init__(config, simulator)
 
-        self._shape = (1, 1, config.resized_height, config.resized_width)
+        self._shape = (len(self._cameras), 1, config.resized_height, config.resized_width)
         self._shm = None
         self._array: npt.NDArray[np.float32] | None = None
         # Ring buffer for modeled latency; sized so index -1-latency is always valid.
@@ -136,7 +139,7 @@ class DepthShmPlugin(CameraConsumerPlugin):
             logger.error(f"[DepthShmPlugin] start failed: {exc}")
 
     def wanted_streams(self) -> set[StreamKey]:
-        return {(self._camera, "depth", self._env_id)}
+        return {(camera, "depth", self._env_id) for camera in self._cameras}
 
     def start(self) -> None:
         """Create (or adopt) the shared-memory block, then start the render thread."""
@@ -167,7 +170,8 @@ class DepthShmPlugin(CameraConsumerPlugin):
         # (and build a second, main-thread renderer for it).
         manager = self.simulator.sensor_manager
         if manager is not None:
-            manager.claim_external_rendering(self._camera)
+            for camera in self._cameras:
+                manager.claim_external_rendering(camera)
 
         self._stop.clear()
         self._thread = threading.Thread(target=self._render_loop, name="depth-shm-render", daemon=True)
@@ -271,7 +275,7 @@ class DepthShmPlugin(CameraConsumerPlugin):
             pass  # no subscriber, or its queue is full: a dropped heartbeat is harmless
 
     def _render_and_publish_once(self) -> bool:
-        """Render this plugin's camera on the calling thread and write the result to shm.
+        """Render this plugin's cameras on the calling thread and write the result to shm.
 
         Returns whether a frame was written.
         """
@@ -284,19 +288,21 @@ class DepthShmPlugin(CameraConsumerPlugin):
         # Render only OUR camera, on this thread. The backend builds a per-thread renderer on
         # first use, so this does not touch the renderer the main thread may hold. ``backend`` is
         # MuJoCo-only (no other backend builds per-thread renderers), hence the cast.
-        cast("MuJoCo", self.simulator).backend.render_cameras([manager.get(self._camera)])
-        buf = self.simulator.get_camera_data(self._camera, "depth", device="cpu")
+        cast("MuJoCo", self.simulator).backend.render_cameras([manager.get(camera) for camera in self._cameras])
+        frames = []
+        for camera in self._cameras:
+            buf = self.simulator.get_camera_data(camera, "depth", device="cpu")
 
-        # [N, H, W, C] host tensor -> this env's [H, W] metric depth.
-        depth = np.asarray(buf[self._env_id].detach().numpy(), dtype=np.float32)
-        if depth.ndim == 3:
-            depth = depth[..., 0]
+            # [N, H, W, C] host tensor -> this env's [H, W] metric depth.
+            depth = np.asarray(buf[self._env_id].detach().numpy(), dtype=np.float32)
+            if depth.ndim == 3:
+                depth = depth[..., 0]
 
-        # Non-hits come back as +inf from the raycast; treat them as maximally far so
-        # they normalize to +0.5 rather than poisoning the array with NaN.
-        depth = np.nan_to_num(depth, nan=self.cfg.far_clip, posinf=self.cfg.far_clip, neginf=self.cfg.near_clip)
-
-        frame = self._resize_clip_normalize(depth)
+            # Non-hits come back as +inf from the raycast; treat them as maximally far so
+            # they normalize to +0.5 rather than poisoning the array with NaN.
+            depth = np.nan_to_num(depth, nan=self.cfg.far_clip, posinf=self.cfg.far_clip, neginf=self.cfg.near_clip)
+            frames.append(self._resize_clip_normalize(depth))
+        frame = np.stack(frames)[:, None]  # [num_cameras, 1, H, W]
 
         self._history.append(frame)
         if len(self._history) > self._history_len:
@@ -305,7 +311,7 @@ class DepthShmPlugin(CameraConsumerPlugin):
         # steps publish real data rather than zeros.
         delayed = self._history[0] if len(self._history) < self._history_len else self._history[-self._history_len]
 
-        np.copyto(self._array, delayed[None, None])
+        np.copyto(self._array, delayed)
         return True
 
     def _crop(self, depth: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
@@ -339,10 +345,17 @@ class DepthShmPlugin(CameraConsumerPlugin):
         # resize leaves a halo the training pipeline never had. MuJoCo also reports the scene-extent
         # plane (tens of meters) where a ray escapes, which would smear badly.
         near, far = self.cfg.near_clip, self.cfg.far_clip
-        depth = np.clip(depth, near, far)
+        if self.cfg.clip_before_resize:
+            depth = np.clip(depth, near, far)
 
         target = (self.cfg.resized_height, self.cfg.resized_width)
-        if depth.shape != target:
+        if depth.shape != target and self.cfg.resize_mode == "cv2_linear":
+            import cv2
+
+            # FAR-FALCON-Terrains' image server: cv2's default interpolation, then a full clamp.
+            depth = cv2.resize(depth, (target[1], target[0]))
+            depth = np.clip(depth, near, far)
+        elif depth.shape != target:
             import torch
 
             tensor = torch.from_numpy(np.ascontiguousarray(depth))[None, None]
