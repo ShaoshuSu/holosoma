@@ -304,7 +304,18 @@ class TerrainTermCfg:
     ``rough_slope_terrain_func``: a pyramid slope (direction drawn with
     ``randint(0, 2) * 2 - 1``) plus ``random_uniform_terrain`` noise with
     amplitude ``U(amplitude_range)``, step 0.005 m and downsampled scale 0.2 m.
-    False (default) keeps the smooth 50/50 up/down pyramid."""
+    False (default) keeps the smooth 50/50 up/down pyramid.
+
+    Also adds the same noise to the directional ``slope_up`` / ``slope_down``
+    tiles, like FALCON's ``rough_terrain`` flag on its directional slopes."""
+
+    spacing_size: float = 0.0
+    """Flat gap [m] between neighbouring sub-terrain tiles (FAR-FALCON ``spacing_size``).
+
+    Each of the ``num_rows - 1`` / ``num_cols - 1`` interior gaps is
+    ``int(spacing_size / horizontal_scale)`` heightfield cells of zero height,
+    and tile origins shift by ``spacing_size`` per row / column. 0 (default)
+    packs the tiles edge to edge."""
 
     slope_treshold: float = 0.75
     """Slope threshold for trimesh correction to vertical surfaces."""

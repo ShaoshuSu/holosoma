@@ -134,6 +134,8 @@ def _spawn_heightfield_terrain_tiles(
 ) -> list[str]:
     """Spawn per-sub-terrain meshes so PhysX can cook collision (full mesh is too large)."""
     prim_paths: list[str] = []
+    if getattr(terrain, "_spacing_pixels", 0):
+        raise NotImplementedError("IsaacSim per-tile terrain does not support spacing_size > 0")
     hf = terrain._height_field_raw
     border = int(terrain._border)
     length_px = int(terrain._length_per_env_pixels)

@@ -122,12 +122,34 @@ class Terrain(TerrainInterface):
         self._width_per_env_pixels: int = int(self._env_width / self._horizontal_scale)
         self._length_per_env_pixels: int = int(self._env_length / self._horizontal_scale)
 
-        self._border: int = max(1, int(self._border_size / self._horizontal_scale))
-        self._tot_cols: int = max(1, int(self._num_cols * self._width_per_env_pixels + 2 * self._border))
-        self._tot_rows: int = max(1, int(self._num_rows * self._length_per_env_pixels + 2 * self._border))
+        # FAR-FALCON ``spacing_size``: flat gaps between tiles, (n - 1) per axis.
+        self._spacing_size: float = getattr(self._cfg, "spacing_size", 0.0) * self._cfg.scale_factor
+        self._spacing_pixels: int = int(self._spacing_size / self._horizontal_scale)
 
-        self._total_width: float = self._num_cols * self._env_width + 2 * self._border_size
-        self._total_length: float = self._num_rows * self._env_length + 2 * self._border_size
+        self._border: int = max(1, int(self._border_size / self._horizontal_scale))
+        self._tot_cols: int = max(
+            1,
+            int(
+                self._num_cols * self._width_per_env_pixels
+                + (self._num_cols - 1) * self._spacing_pixels
+                + 2 * self._border
+            ),
+        )
+        self._tot_rows: int = max(
+            1,
+            int(
+                self._num_rows * self._length_per_env_pixels
+                + (self._num_rows - 1) * self._spacing_pixels
+                + 2 * self._border
+            ),
+        )
+
+        self._total_width: float = (
+            self._num_cols * self._env_width + (self._num_cols - 1) * self._spacing_size + 2 * self._border_size
+        )
+        self._total_length: float = (
+            self._num_rows * self._env_length + (self._num_rows - 1) * self._spacing_size + 2 * self._border_size
+        )
 
         self._height_field_raw: np.ndarray = np.zeros((self._tot_rows, self._tot_cols), dtype=np.int16)
         self._max_slope: float = self._cfg.max_slope
@@ -347,16 +369,16 @@ class Terrain(TerrainInterface):
         """
         i = row
         j = col
-        # map coordinate system
-        start_x = self._border + i * self._length_per_env_pixels
-        end_x = self._border + (i + 1) * self._length_per_env_pixels
-        start_y = self._border + j * self._width_per_env_pixels
-        end_y = self._border + (j + 1) * self._width_per_env_pixels
+        # map coordinate system (tiles separated by ``spacing_pixels`` flat cells)
+        start_x = self._border + i * (self._length_per_env_pixels + self._spacing_pixels)
+        end_x = start_x + self._length_per_env_pixels
+        start_y = self._border + j * (self._width_per_env_pixels + self._spacing_pixels)
+        end_y = start_y + self._width_per_env_pixels
         self._height_field_raw[start_x:end_x, start_y:end_y] = terrain.height_field_raw
 
         # Origin is center of the tile, not the corner.
-        env_origin_x = (i + 0.5) * self._env_length
-        env_origin_y = (j + 0.5) * self._env_width
+        env_origin_x = (i + 0.5) * self._env_length + i * self._spacing_size
+        env_origin_y = (j + 0.5) * self._env_width + j * self._spacing_size
 
         x1 = int((self._env_length / 2.0 - 0.5) / terrain.horizontal_scale)
         x2 = int((self._env_length / 2.0 + 0.5) / terrain.horizontal_scale)
@@ -511,6 +533,7 @@ class Terrain(TerrainInterface):
         """
         slope = -difficulty * self._max_slope
         terrain_utils.pyramid_sloped_terrain(terrain, slope=slope, platform_size=self._cfg.platform_size)
+        self._add_directional_slope_roughness(terrain)
 
     def _slope_down_terrain_func(self, terrain: Any, difficulty: float) -> None:
         """Generate a pyramid slope that descends from the border toward the center.
@@ -527,6 +550,18 @@ class Terrain(TerrainInterface):
         """
         slope = difficulty * self._max_slope
         terrain_utils.pyramid_sloped_terrain(terrain, slope=slope, platform_size=self._cfg.platform_size)
+        self._add_directional_slope_roughness(terrain)
+
+    def _add_directional_slope_roughness(self, terrain: Any) -> None:
+        """With ``cfg.slopes_roughness``, add FAR-FALCON's ``rough_terrain`` noise to a
+        ``slope_up`` / ``slope_down`` tile: ``random_uniform_terrain`` with amplitude
+        ``U(amplitude_range)``, step 0.005 m and downsampled scale 0.2 m."""
+        if not getattr(self._cfg, "slopes_roughness", False):
+            return
+        amplitude = np.random.uniform(self._cfg.amplitude_range[0], self._cfg.amplitude_range[1])
+        terrain_utils.random_uniform_terrain(
+            terrain, min_height=-amplitude, max_height=amplitude, step=0.005, downsampled_scale=0.2
+        )
 
     def _slopes_terrain_func(self, terrain: Any, difficulty: float) -> None:
         """Generate a pyramid slope, randomly upward or downward (50/50 per tile).
