@@ -326,6 +326,23 @@ class SimulatorInitConfig:
         simulator:mjwarp   (uses warp backend)
     """
 
+    mujoco_solver_iterations: int | None = None
+    """MuJoCo constraint-solver iterations (``mjOption.iterations``). ``None`` keeps MuJoCo's default
+    (100). The world spec is built fresh, so a robot or scene MJCF's ``<option>`` does not carry over;
+    set this to match one (e.g. FAR-FALCON-Terrains' scene uses 50)."""
+
+    mujoco_offscreen_samples: int | None = None
+    """MuJoCo offscreen multisampling (``vis.quality.offsamples``) for camera renders. ``None`` keeps
+    MuJoCo's default (4). ``0`` disables it: depth at object edges is then the pixel-centre surface,
+    as a ray-cast training camera sees it, instead of a multisample-resolve artifact. The viewer
+    window is unaffected."""
+
+    mujoco_depth_gymnasium: bool = False
+    """Classic backend: render depth cameras with gymnasium's ``MujocoRenderer`` (as FAR-FALCON-Terrains'
+    sim2sim image server does) and linearize with ``znear``/``zfar`` x extent, instead of
+    ``mujoco.Renderer``. The two resolve multisampled (``vis.quality.offsamples``) depth differently,
+    so object edges -- stone and stair edges included -- differ. Needs ``gymnasium`` installed."""
+
     mujoco_warp: MujocoWarpConfig = field(default_factory=MujocoWarpConfig)
     """MuJoCo Warp backend memory allocation configuration.
 

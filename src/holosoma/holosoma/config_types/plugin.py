@@ -471,10 +471,10 @@ class DepthShmPluginConfig(PluginConfig):
     The consuming policy polls shared memory at its own rate and simply re-reads the latest frame,
     so a rate below the control rate means repeated frames rather than stalls."""
 
-    resize_mode: Literal["bicubic_antialias", "cv2_linear"] = "bicubic_antialias"
-    """``bicubic_antialias``: torch bicubic with antialiasing (training's resize). ``cv2_linear``:
-    ``cv2.resize`` with its default interpolation, as FAR-FALCON-Terrains' sim2sim image server
-    does — for an integer downscale this samples pixel centres without low-pass filtering."""
+    resize_mode: Literal["bicubic_antialias", "cv2_cubic"] = "bicubic_antialias"
+    """``bicubic_antialias``: torch bicubic with antialiasing (training's resize). ``cv2_cubic``:
+    ``cv2.resize(..., interpolation=cv2.INTER_CUBIC)``, as FAR-FALCON-Terrains' sim2sim image server
+    does — no low-pass filtering, so an odd integer downscale returns the block-centre pixels."""
 
     clip_before_resize: bool = True
     """Clamp to ``[near_clip, far_clip]`` before the resize (training's order). FAR-FALCON-Terrains'

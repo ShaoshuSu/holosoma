@@ -92,6 +92,12 @@ class MujocoSceneManager:
         # TODO: expose to Mujoco-specific config
         self.world_spec.option.gravity = [0, 0, -9.81]
         self.world_spec.option.timestep = 1.0 / simulator_config.sim.fps  # type: ignore[attr-defined]
+        iterations = getattr(simulator_config, "mujoco_solver_iterations", None)
+        if iterations is not None:
+            self.world_spec.option.iterations = iterations
+        offsamples = getattr(simulator_config, "mujoco_offscreen_samples", None)
+        if offsamples is not None:
+            self.world_spec.visual.quality.offsamples = offsamples
 
     def add_materials(self) -> None:
         """Add standard materials and textures to the world specification.

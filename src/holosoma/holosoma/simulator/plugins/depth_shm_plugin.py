@@ -349,11 +349,11 @@ class DepthShmPlugin(CameraConsumerPlugin):
             depth = np.clip(depth, near, far)
 
         target = (self.cfg.resized_height, self.cfg.resized_width)
-        if depth.shape != target and self.cfg.resize_mode == "cv2_linear":
+        if depth.shape != target and self.cfg.resize_mode == "cv2_cubic":
             import cv2
 
-            # FAR-FALCON-Terrains' image server: cv2's default interpolation, then a full clamp.
-            depth = cv2.resize(depth, (target[1], target[0]))
+            # FAR-FALCON-Terrains' image server: cv2 bicubic, then a full clamp.
+            depth = cv2.resize(depth, (target[1], target[0]), interpolation=cv2.INTER_CUBIC)
             depth = np.clip(depth, near, far)
         elif depth.shape != target:
             import torch

@@ -181,11 +181,11 @@ def _falcon_image_server_reference(depth: npt.NDArray[np.float32], cfg: DepthShm
     import cv2
 
     near, far = cfg.near_clip, cfg.far_clip
-    resized = cv2.resize(depth, (cfg.resized_width, cfg.resized_height))
+    resized = cv2.resize(depth, (cfg.resized_width, cfg.resized_height), interpolation=cv2.INTER_CUBIC)
     return ((np.clip(resized, near, far) - near) / (far - near) - 0.5).astype(np.float32)
 
 
-def test_cv2_linear_mode_matches_falcon_image_server() -> None:
+def test_cv2_cubic_mode_matches_falcon_image_server() -> None:
     pytest.importorskip("cv2")
     cfg = _d435i_config(
         resized_width=48,
@@ -196,7 +196,7 @@ def test_cv2_linear_mode_matches_falcon_image_server() -> None:
         near_clip=0.1,
         far_clip=2.0,
         empty_threshold=0.0,
-        resize_mode="cv2_linear",
+        resize_mode="cv2_cubic",
         clip_before_resize=False,
     )
     rng = np.random.default_rng(0)

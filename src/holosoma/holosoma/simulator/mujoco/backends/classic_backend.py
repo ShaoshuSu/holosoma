@@ -24,6 +24,34 @@ if TYPE_CHECKING:
     from holosoma.simulator.shared.camera_sensor import CameraRuntime
 
 
+class _GymnasiumDepthRenderer:
+    """Depth from gymnasium's ``MujocoRenderer``, exactly as FAR-FALCON-Terrains' sim2sim image server.
+
+    Drop-in for the ``update_scene`` / ``render`` part of ``mujoco.Renderer`` used below. Returns
+    metric depth linearized from gymnasium's [0, 1] depth buffer with near/far = ``vis.map.znear/zfar``
+    x ``stat.extent`` (FALCON's ``MujocoCamera._depth_2_meters``). One instance per camera, built on
+    the thread that renders: its GL context is current only there.
+    """
+
+    def __init__(self, model: mujoco.MjModel, data: mujoco.MjData, camera_id: int, height: int, width: int):
+        from gymnasium.envs.mujoco.mujoco_rendering import MujocoRenderer
+
+        self._model = model
+        self._renderer = MujocoRenderer(model, data, camera_id=camera_id, width=width, height=height)
+        self._camera_id = camera_id
+
+    def update_scene(self, data: mujoco.MjData, camera: int) -> None:
+        # gymnasium renders the data and camera it was built with (the backend's single MjData).
+        assert camera == self._camera_id, (camera, self._camera_id)
+
+    def render(self) -> np.ndarray:
+        depth = self._renderer.render("depth_array")
+        extent = self._model.stat.extent
+        near = self._model.vis.map.znear * extent
+        far = self._model.vis.map.zfar * extent
+        return (near / (1.0 - depth * (1.0 - near / far))).astype(np.float32)
+
+
 class ClassicBackend(IMujocoBackend):
     """CPU-based single-environment MuJoCo backend.
 
@@ -123,9 +151,14 @@ class ClassicBackend(IMujocoBackend):
         renderer = self._mj_renderers.get(key)
         if renderer is None:
             height, width = self._cam_sizes[name]
-            renderer = mujoco.Renderer(self.model, height=height, width=width)
-            if data_type == "depth":
-                renderer.enable_depth_rendering()
+            if data_type == "depth" and getattr(self.config.simulator, "mujoco_depth_gymnasium", False):
+                renderer = _GymnasiumDepthRenderer(
+                    self.model, self.data, self._cam_ids[name], height=height, width=width
+                )
+            else:
+                renderer = mujoco.Renderer(self.model, height=height, width=width)
+                if data_type == "depth":
+                    renderer.enable_depth_rendering()
             self._mj_renderers[key] = renderer
         return renderer
 
