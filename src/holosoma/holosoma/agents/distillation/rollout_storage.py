@@ -10,6 +10,8 @@ depth image, the (student) action taken, the (teacher) action label, and the
 
 from __future__ import annotations
 
+from typing import Iterator
+
 import torch
 
 from holosoma.agents.modules.data_utils import RolloutStorage
@@ -67,3 +69,10 @@ class RolloutStorageDagger(RolloutStorage):
             known = sorted(self._buffers.keys())
             raise KeyError(f"RolloutStorageDagger.add() got unknown keys {unknown}. Registered buffers: {known}.")
         super().add(**data)
+
+    def mini_batch_generator(
+        self, num_mini_batches: int, num_epochs: int = 8, reshuffle_each_epoch: bool = True
+    ) -> Iterator[dict[str, torch.Tensor]]:
+        """Same as :meth:`RolloutStorage.mini_batch_generator`, but reshuffles every
+        epoch by default, as the reference distillation implementation does."""
+        return super().mini_batch_generator(num_mini_batches, num_epochs, reshuffle_each_epoch=reshuffle_each_epoch)
