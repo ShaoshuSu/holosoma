@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import types
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
@@ -11,6 +12,9 @@ torch = pytest.importorskip("torch")
 mujoco = pytest.importorskip("mujoco")
 
 from holosoma.simulator.mujoco.backends.classic_backend import ClassicBackend  # noqa: E402
+
+if TYPE_CHECKING:
+    from holosoma.config_types.full_sim import FullSimConfig
 
 
 def test_tilted_contact_force_is_reported_in_world_coordinates():
@@ -68,7 +72,8 @@ def _settled_backend(tilt: float = 0.0):
     data = mujoco.MjData(model)
     for _ in range(SETTLE_STEPS):
         mujoco.mj_step(model, data)
-    config = types.SimpleNamespace(training=types.SimpleNamespace(num_envs=1))
+    # compute_contact_forces reaches only model/data/device, so the stub config satisfies it.
+    config = cast("FullSimConfig", types.SimpleNamespace(training=types.SimpleNamespace(num_envs=1)))
     return model, data, ClassicBackend(model, data, config, "cpu")
 
 
