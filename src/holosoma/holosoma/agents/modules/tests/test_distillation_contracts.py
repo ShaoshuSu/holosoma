@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import json
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,11 +14,13 @@ from holosoma.agents.distillation_ppo.distillation_ppo import DistillationMiniba
 from holosoma.agents.modules.module_utils import setup_depth_student_teacher_module, setup_student_teacher_module
 from holosoma.agents.modules.student_teacher_modules import StudentTeacher
 from holosoma.agents.ppo.ppo import EmpiricalNormalization
-from holosoma.config_types.algo import DistillationPPOConfig, StudentTeacherModuleConfig
+from holosoma.config_types.algo import DistillationConfig, DistillationPPOConfig, StudentTeacherModuleConfig
 from holosoma.train_agent import infer_num_teachers_from_checkpoint
 from holosoma.utils.safe_torch_import import torch
 
 pytestmark = pytest.mark.no_sim
+
+DEPTH_BACKBONE = "holosoma.agents.modules.depth_backbone.DepthOnlyFCBackbone58x87Small"
 
 
 @pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
@@ -357,19 +361,18 @@ def test_teacher_normalizer_round_trips_through_full_checkpoint(
     )
 
 
-@pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
-def test_export_writes_the_onnx_pair_the_depth_policy_loads(
-    algo_cls: type[Distillation | DistillationPPO],
-    tmp_path: Path,
-) -> None:
-    np = pytest.importorskip("numpy")
-    depth_distillation = pytest.importorskip("holosoma_inference.policies.depth_distillation")
-
-    dof_names = ["left_hip_pitch_joint", "right_hip_pitch_joint", "waist_yaw_joint"]
+def _export_ready_algo(
+    algo_cls: type[Distillation | DistillationPPO], tmp_path: Path, depth_backbone: str | None
+) -> Any:
     module_config = StudentTeacherModuleConfig(
-        student_hidden_dims=[8], teacher_hidden_dims=[8], critic_hidden_dims=[8], depth_output_dim=4
+        student_hidden_dims=[8],
+        teacher_hidden_dims=[8],
+        critic_hidden_dims=[8],
+        depth_backbone=depth_backbone,
+        depth_output_dim=4,
     )
     algo = cast("Any", object.__new__(algo_cls))
+    algo.config = SimpleNamespace(module=module_config)
     if algo_cls is DistillationPPO:
         algo.policy = setup_student_teacher_module(
             num_actor_obs=5,
@@ -395,7 +398,7 @@ def test_export_writes_the_onnx_pair_the_depth_policy_loads(
     algo.env = SimpleNamespace(
         command_manager=None,
         robot_config=SimpleNamespace(
-            dof_names=dof_names,
+            dof_names=["left_hip_pitch_joint", "right_hip_pitch_joint", "waist_yaw_joint"],
             control=SimpleNamespace(
                 stiffness={"hip_pitch": 100.0, "waist_yaw": 200.0},
                 damping={"hip_pitch": 2.0, "waist_yaw": 5.0},
@@ -405,46 +408,195 @@ def test_export_writes_the_onnx_pair_the_depth_policy_loads(
         ),
     )
     algo.device = "cpu"
-    algo.depth_shape = (58, 87)
+    algo.depth_shape = (58, 87) if depth_backbone is not None else None
     algo.actor_obs_dim = 5
     algo.current_learning_iteration = 7
     algo._experiment_config = SimpleNamespace(to_serializable_dict=dict)
     algo._wandb_run_path = None
-    uploaded: list[str] = []
-    algo.logging_helper = SimpleNamespace(save_to_wandb=uploaded.append)
+    algo.uploaded = []
+    algo.logging_helper = SimpleNamespace(save_to_wandb=algo.uploaded.append)
+    return algo
+
+
+@pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
+def test_export_writes_a_depth_backbone_and_student_pair(
+    algo_cls: type[Distillation | DistillationPPO],
+    tmp_path: Path,
+) -> None:
+    ort = pytest.importorskip("onnxruntime")
+    algo = _export_ready_algo(algo_cls, tmp_path, depth_backbone=DEPTH_BACKBONE)
 
     algo_cls.export(algo, onnx_file_path=str(tmp_path / "exported" / "model_00007.onnx"))
 
     export_dir = tmp_path / "exported" / "model_00007"
-    assert uploaded == [str(export_dir / "depth_backbone.onnx"), str(export_dir / "student.onnx")]
+    assert algo.uploaded == [str(export_dir / "depth_backbone.onnx"), str(export_dir / "student.onnx")]
     assert algo.policy.training
     assert not any(teacher.training for teacher in algo.policy.teachers)
 
-    # Load the pair through the inference policy's own loaders.
-    deployed = object.__new__(depth_distillation.DepthDistillationPolicy)
-    deployed.config = SimpleNamespace(
-        camera=SimpleNamespace(props=SimpleNamespace(resized_height=58, resized_width=87))
-    )
-    deployed.num_dofs = 3
-    deployed.robot_config = SimpleNamespace(dof_names=dof_names)
-    deployed.policy_action_scale = 1.0
-    deployed._load_depth_backbone(str(export_dir / "depth_backbone.onnx"))
-    deployed._load_student_model(str(export_dir / "student.onnx"))
-
-    assert (deployed.depth_buffer_len, deployed.depth_image_shape, deployed.depth_latent_dim) == (1, (58, 87), 4)
-    assert deployed.onnx_input_names == ["obs"]
-    assert deployed._model_joint_names == dof_names
-    assert deployed.policy_action_scale == 0.25
-    np.testing.assert_allclose(deployed.onnx_kp, [100.0, 100.0, 200.0])
-    np.testing.assert_allclose(deployed.onnx_kd, [2.0, 2.0, 5.0])
+    backbone = ort.InferenceSession(str(export_dir / "depth_backbone.onnx"))
+    student = ort.InferenceSession(str(export_dir / "student.onnx"))
+    assert [i.name for i in backbone.get_inputs()] == ["depth_image"]
+    assert [i.name for i in student.get_inputs()] == ["obs"]
+    metadata = student.get_modelmeta().custom_metadata_map
+    assert json.loads(metadata["joint_names"]) == algo.env.robot_config.dof_names
+    assert json.loads(metadata["kp"]) == [100.0, 100.0, 200.0]
+    assert json.loads(metadata["action_scale"]) == 0.25
 
     # The composed pair reproduces the student's deterministic action.
     depth = torch.rand(1, 58, 87) - 0.5
     actor_obs = torch.randn(1, 5)
-    latent = deployed.depth_backbone_session.run(
-        [deployed.depth_backbone_output_name], {deployed.depth_backbone_input_name: depth.numpy()}
-    )[0]
-    actions = deployed.policy({"obs": np.concatenate([actor_obs.numpy(), latent], axis=1)})[0]
+    (latent,) = backbone.run(None, {"depth_image": depth.numpy()})
+    (actions,) = student.run(None, {"obs": torch.cat([actor_obs, torch.from_numpy(latent)], dim=1).numpy()})
     with torch.no_grad():
         expected = algo.policy.act_inference({"actor_obs": actor_obs, "depth_obs": depth})
-    np.testing.assert_allclose(actions, expected.numpy(), rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(torch.from_numpy(actions), expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
+def test_export_writes_a_single_policy_file_without_depth(
+    algo_cls: type[Distillation | DistillationPPO],
+    tmp_path: Path,
+) -> None:
+    ort = pytest.importorskip("onnxruntime")
+    algo = _export_ready_algo(algo_cls, tmp_path, depth_backbone=None)
+    onnx_path = tmp_path / "exported" / "model_00007.onnx"
+
+    algo_cls.export(algo, onnx_file_path=str(onnx_path))
+
+    assert algo.uploaded == [str(onnx_path)]
+    session = ort.InferenceSession(str(onnx_path))
+    # Same input/output names as PPO.export.
+    assert [i.name for i in session.get_inputs()] == ["actor_obs"]
+    assert [o.name for o in session.get_outputs()] == ["action"]
+    actor_obs = torch.randn(1, 5)
+    (actions,) = session.run(None, {"actor_obs": actor_obs.numpy()})
+    with torch.no_grad():
+        expected = algo.policy.act_inference({"actor_obs": actor_obs})
+    torch.testing.assert_close(torch.from_numpy(actions), expected, rtol=1e-5, atol=1e-5)
+
+
+class _FakeObservationManager:
+    def __init__(self, groups: dict[str, Any]) -> None:
+        self.groups = groups
+
+    def get_obs_dims(self) -> dict[str, Any]:
+        return {
+            name: {term: value.shape[1:].numel() for term, value in group.items()}
+            if isinstance(group, dict)
+            else group.shape[1]
+            for name, group in self.groups.items()
+        }
+
+    def compute_group(self, name: str, *, modify_history: bool = True) -> Any:
+        assert not modify_history
+        return self.groups[name]
+
+
+class _FakeEnv:
+    """Random-walk env exposing whatever observation groups it is given."""
+
+    num_envs = 4
+
+    def __init__(self, depth_group: tuple[str, str] | None = None) -> None:
+        self.depth_group = depth_group
+        self.robot_config = SimpleNamespace(actions_dim=2)
+        self.command_manager = SimpleNamespace(get_state=lambda _name: None)
+        self.observation_manager = _FakeObservationManager(self._obs())
+
+    def _obs(self) -> dict[str, Any]:
+        obs: dict[str, Any] = {
+            "actor_obs": torch.randn(self.num_envs, 3),
+            "teacher_obs": torch.randn(self.num_envs, 3),
+            "critic_obs": torch.randn(self.num_envs, 3),
+        }
+        if self.depth_group is not None:
+            group, term = self.depth_group
+            obs[group] = {term: torch.rand(self.num_envs, 58, 87)}
+        return obs
+
+    def reset_all(self) -> dict[str, Any]:
+        return self._obs()
+
+    def step(self, _actor_state: dict[str, Any]) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, dict[str, Any]]:
+        obs = self._obs()
+        return obs, torch.randn(self.num_envs), torch.zeros(self.num_envs, dtype=torch.bool), {}
+
+    def get_checkpoint_state(self) -> dict[str, Any]:
+        return {}
+
+
+def _build_algo(
+    algo_cls: type[Distillation | DistillationPPO],
+    env: _FakeEnv,
+    tmp_path: Path,
+    **module_overrides: Any,
+) -> Any:
+    module_overrides.setdefault("depth_backbone", None)
+    module = StudentTeacherModuleConfig(
+        student_hidden_dims=[8], teacher_hidden_dims=[4], critic_hidden_dims=[8], **module_overrides
+    )
+    config_cls: Any = DistillationPPOConfig if algo_cls is DistillationPPO else DistillationConfig
+    config = config_cls(module=module, num_steps_per_env=3, num_mini_batches=2, num_learning_iterations=2)
+    algo = cast("Any", algo_cls(env=cast("Any", env), config=config, log_dir=str(tmp_path), device="cpu"))
+    algo.logging_helper = SimpleNamespace(
+        record_collection_time=nullcontext,
+        record_learn_time=nullcontext,
+        update_episode_stats=lambda *_args: None,
+        post_epoch_logging=lambda **_kwargs: None,
+        save_checkpoint_artifact=lambda state, path: torch.save(state, path),
+    )
+    algo._checkpoint_metadata = lambda **_kwargs: {}
+    algo.setup()
+    return algo
+
+
+def _load_random_teacher(algo: Any, tmp_path: Path) -> None:
+    teacher = torch.nn.Sequential(torch.nn.Linear(3, 4), torch.nn.ELU(), torch.nn.Linear(4, 2))
+    path = tmp_path / "teacher.pt"
+    torch.save({"actor_model_state_dict": {f"actor.{k}": v for k, v in teacher.state_dict().items()}}, path)
+    algo.load_teacher(str(path))
+
+
+@pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
+def test_student_without_depth_backbone_trains_on_proprioception_only(
+    algo_cls: type[Distillation | DistillationPPO], tmp_path: Path
+) -> None:
+    algo = _build_algo(algo_cls, _FakeEnv(depth_group=None), tmp_path)
+    _load_random_teacher(algo, tmp_path)
+    before = copy.deepcopy(algo.policy.student.state_dict())
+
+    algo.learn()
+
+    assert not hasattr(algo.policy, "depth_backbone")
+    assert algo.depth_shape is None
+    assert "depth_obs" not in algo.storage._buffers
+    assert any(not torch.equal(before[k], v) for k, v in algo.policy.student.state_dict().items())
+    assert (tmp_path / "model_00001.pt").exists()
+
+
+@pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
+def test_depth_group_is_required_only_with_a_depth_backbone(
+    algo_cls: type[Distillation | DistillationPPO], tmp_path: Path
+) -> None:
+    with pytest.raises(KeyError, match="depth_camera"):
+        _build_algo(algo_cls, _FakeEnv(depth_group=None), tmp_path, depth_backbone=DEPTH_BACKBONE)
+
+
+@pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
+def test_depth_observation_group_and_term_are_configurable(
+    algo_cls: type[Distillation | DistillationPPO], tmp_path: Path
+) -> None:
+    algo = _build_algo(
+        algo_cls,
+        _FakeEnv(depth_group=("head_camera", "depth")),
+        tmp_path,
+        depth_backbone=DEPTH_BACKBONE,
+        depth_obs_group="head_camera",
+        depth_obs_term="depth",
+    )
+    _load_random_teacher(algo, tmp_path)
+
+    algo.learn()
+
+    assert algo.depth_shape == (58, 87)
+    assert algo.storage["depth_obs"].shape[2:] == (58, 87)

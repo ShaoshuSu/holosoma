@@ -5,7 +5,8 @@ that pre-registers the extra fields required by the student/teacher/critic
 distillation pipeline:
 
 - ``teacher_obs``: privileged observation consumed by the frozen teacher MLP.
-- ``depth_obs``: raw depth image (H, W) consumed by the student's CNN backbone.
+- ``depth_obs``: raw depth image (H, W) consumed by the student's CNN backbone,
+  registered only for a student with a depth backbone.
 - ``teacher_actions``: DAgger targets produced by ``policy.teacher_act``.
 
 All other fields (``actor_obs``, ``critic_obs``, ``actions``, ``rewards``,
@@ -39,8 +40,9 @@ class RolloutStorageDistillation(RolloutStorage):
         Flat dimension of the teacher's privileged observation.
     critic_obs_dim : int
         Flat dimension of the critic's privileged observation.
-    depth_shape : tuple[int, ...]
-        Spatial shape of the depth image (e.g. ``(H, W)``).
+    depth_shape : tuple[int, ...] | None
+        Spatial shape of the depth image (e.g. ``(H, W)``), or ``None`` for a
+        student without depth input.
     num_actions : int
         Action dimension.
     device : str
@@ -54,7 +56,7 @@ class RolloutStorageDistillation(RolloutStorage):
         actor_obs_dim: int,
         teacher_obs_dim: int,
         critic_obs_dim: int,
-        depth_shape: tuple[int, ...],
+        depth_shape: tuple[int, ...] | None,
         num_actions: int,
         device: str = "cpu",
     ):
@@ -63,14 +65,15 @@ class RolloutStorageDistillation(RolloutStorage):
         self.actor_obs_dim = actor_obs_dim
         self.teacher_obs_dim = teacher_obs_dim
         self.critic_obs_dim = critic_obs_dim
-        self.depth_shape = tuple(depth_shape)
+        self.depth_shape = tuple(depth_shape) if depth_shape is not None else None
         self.num_actions = num_actions
 
         # Register all per-step buffers the DistillationPPO update() loop reads.
         self.register("actor_obs", shape=(actor_obs_dim,), dtype=torch.float)
         self.register("teacher_obs", shape=(teacher_obs_dim,), dtype=torch.float)
         self.register("critic_obs", shape=(critic_obs_dim,), dtype=torch.float)
-        self.register("depth_obs", shape=self.depth_shape, dtype=torch.float)
+        if self.depth_shape is not None:
+            self.register("depth_obs", shape=self.depth_shape, dtype=torch.float)
 
         self.register("actions", shape=(num_actions,), dtype=torch.float)
         self.register("teacher_actions", shape=(num_actions,), dtype=torch.float)

@@ -8,7 +8,8 @@ against teacher actions (DAgger) plus PPO advantages via the critic.
 Obs layout (matches the distillation rollout storage):
 - ``actor_obs``: proprioception only, consumed by the student.
 - ``depth_obs``: raw depth image, consumed by the depth CNN backbone whose
-  latent is concatenated onto ``actor_obs`` before the student MLP.
+  latent is concatenated onto ``actor_obs`` before the student MLP. Only the
+  ``Depth*`` modules take it.
 - ``teacher_obs``: privileged obs seen by the frozen teacher (same layout as
   what the teacher's original PPO training saw in its actor group). It is raw;
   each teacher normalizes it with the frozen statistics of its own PPO

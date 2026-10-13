@@ -352,11 +352,11 @@ class FastSACAlgoConfig:
 
 @dataclass(frozen=True)
 class StudentTeacherModuleConfig:
-    """Configuration for a DepthStudentTeacherCritic module composite.
+    """Configuration for the student/teacher(/critic) module of the distillation algorithms.
 
-    Slots into :class:`DistillationPPOConfig`. Dimensions are resolved at
-    runtime from the observation manager; only hidden-layer shapes and the
-    depth-backbone class are declared here.
+    Slots into :class:`DistillationPPOConfig` and :class:`DistillationConfig`.
+    Dimensions are resolved at runtime from the observation manager; only
+    hidden-layer shapes and the optional depth backbone are declared here.
     """
 
     student_hidden_dims: List[int] = field(default_factory=lambda: [2048, 1024, 512, 256, 128])
@@ -366,16 +366,24 @@ class StudentTeacherModuleConfig:
     """Teacher MLP hidden layer widths. Must match the teacher checkpoint being loaded."""
 
     critic_hidden_dims: List[int] = field(default_factory=lambda: [512, 256, 128])
-    """Critic MLP hidden layer widths."""
+    """Critic MLP hidden layer widths. Ignored by :class:`DistillationConfig`, which has no critic."""
 
     activation: str = "ELU"
     """Activation function name."""
 
-    depth_backbone: str = "holosoma.agents.modules.depth_backbone.DepthOnlyFCBackbone58x87Small"
-    """Dotted path to the depth-backbone nn.Module class, instantiated as ``cls(depth_output_dim)``."""
+    depth_backbone: str | None = "holosoma.agents.modules.depth_backbone.DepthOnlyFCBackbone58x87Small"
+    """Dotted path to a depth-backbone ``nn.Module`` class, instantiated as ``cls(depth_output_dim)``.
+    The student also consumes the backbone's latent of the depth image. ``None`` builds a student
+    that sees only ``actor_obs`` and needs no depth observation group."""
 
     depth_output_dim: int = 32
     """Latent dim produced by the depth backbone and concatenated onto the student input."""
+
+    depth_obs_group: str = "depth_camera"
+    """Observation group holding the depth image. Only read when ``depth_backbone`` is set."""
+
+    depth_obs_term: str = "depth_cam"
+    """Term of ``depth_obs_group`` holding the depth image, if the group is not concatenated."""
 
 
 @dataclass(frozen=True)
@@ -458,7 +466,7 @@ class DistillationPPOConfig:
     """Weight decay for the student/critic AdamW param groups."""
 
     depth_weight_decay: float = 1e-2
-    """Weight decay for the depth-backbone AdamW parameter group."""
+    """Weight decay for the depth-backbone AdamW parameter group. Unused without a depth backbone."""
 
     eval_callbacks: Any = None
     """Evaluation callbacks configuration."""
@@ -493,8 +501,8 @@ class DistillationConfig:
     """Number of mini-batches per epoch."""
 
     learning_rate: float = 3e-4
-    """Learning rate for the Adam optimizer (applied uniformly to student +
-    depth backbone)."""
+    """Learning rate for the Adam optimizer (applied uniformly to the student and
+    its depth backbone, if any)."""
 
     max_grad_norm: float = 1.0
     """Maximum gradient norm for clipping."""

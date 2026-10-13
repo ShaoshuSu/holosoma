@@ -4,8 +4,8 @@ Parallels :class:`holosoma.agents.distillation_ppo.rollout_storage.RolloutStorag
 but drops every PPO-only field: no ``critic_obs``, no ``values``, ``returns``,
 ``advantages``, ``actions_log_prob``, ``action_mean``, ``action_sigma``, and
 no ``rewards``. Pure behavior-cloning needs only student/teacher obs, the
-depth image, the (student) action taken, the (teacher) action label, and the
-``dones`` flag for episode resets.
+depth image (for a depth student), the (student) action taken, the (teacher)
+action label, and the ``dones`` flag for episode resets.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from holosoma.agents.modules.data_utils import RolloutStorage
 
 
 class RolloutStorageDagger(RolloutStorage):
-    """Six-field storage for pure-DAgger distillation.
+    """Storage for pure-DAgger distillation.
 
     Parameters
     ----------
@@ -28,8 +28,9 @@ class RolloutStorageDagger(RolloutStorage):
         Flat dimension of the student's proprio observation.
     teacher_obs_dim : int
         Flat dimension of the teacher's privileged observation.
-    depth_shape : tuple[int, ...]
-        Spatial shape of the depth image (e.g. ``(H, W)``).
+    depth_shape : tuple[int, ...] | None
+        Spatial shape of the depth image (e.g. ``(H, W)``), or ``None`` for a
+        student without depth input.
     num_actions : int
     device : str
     """
@@ -40,7 +41,7 @@ class RolloutStorageDagger(RolloutStorage):
         num_transitions_per_env: int,
         actor_obs_dim: int,
         teacher_obs_dim: int,
-        depth_shape: tuple[int, ...],
+        depth_shape: tuple[int, ...] | None,
         num_actions: int,
         device: str = "cpu",
     ):
@@ -48,12 +49,13 @@ class RolloutStorageDagger(RolloutStorage):
 
         self.actor_obs_dim = actor_obs_dim
         self.teacher_obs_dim = teacher_obs_dim
-        self.depth_shape = tuple(depth_shape)
+        self.depth_shape = tuple(depth_shape) if depth_shape is not None else None
         self.num_actions = num_actions
 
         self.register("actor_obs", shape=(actor_obs_dim,), dtype=torch.float)
         self.register("teacher_obs", shape=(teacher_obs_dim,), dtype=torch.float)
-        self.register("depth_obs", shape=self.depth_shape, dtype=torch.float)
+        if self.depth_shape is not None:
+            self.register("depth_obs", shape=self.depth_shape, dtype=torch.float)
         self.register("actions", shape=(num_actions,), dtype=torch.float)
         self.register("teacher_actions", shape=(num_actions,), dtype=torch.float)
         self.register("dones", shape=(1,), dtype=torch.bool)
