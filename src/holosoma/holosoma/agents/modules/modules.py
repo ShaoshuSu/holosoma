@@ -62,7 +62,7 @@ class CameraVisionMask(nn.Module):
         self,
         num_cameras: int = 2,
         k: float = 4.0,
-        v_th: float = 0.05,
+        v_th: float = 0.2,
         hard_cutoff: float = 0.0,
     ):
         super().__init__()
@@ -439,7 +439,7 @@ def build_cnn_layer(
             vision_mask = CameraVisionMask(
                 num_cameras=num_cameras,
                 k=getattr(layer_config, "vision_mask_k", 4.0),
-                v_th=getattr(layer_config, "vision_mask_v_th", 0.05),
+                v_th=getattr(layer_config, "vision_mask_v_th", 0.2),
                 hard_cutoff=getattr(layer_config, "vision_mask_hard_cutoff", 0.0),
             )
     else:

@@ -112,7 +112,7 @@ class LayerConfig:
     vision_mask_k: float = 4.0
     """Sigmoid steepness for vision mask."""
 
-    vision_mask_v_th: float = 0.05
+    vision_mask_v_th: float = 0.2
     """Velocity threshold for vision mask."""
 
     vision_mask_hard_cutoff: float = 0.0
