@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "holosoma-inference"
-version = "0.1.1"
+version = "0.1.2"
 description = "holosoma-inference: inference components for humanoid robot policies"
 readme = "README.md"
 requires-python = ">=3.8"
