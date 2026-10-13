@@ -1155,24 +1155,20 @@ class IsaacSim(BaseSimulator):
 
         self.scene.write_data_to_sim()
 
-        # Render on the render-interval when the GUI or a sensor needs it, INLINE via
-        # sim.step(render=render_now). IsaacLab's self.render() only flushes fabric / drives the RTX
-        # render products when sim.render_mode >= PARTIAL_RENDERING; at NO_GUI_OR_RENDERING (-1) it is
-        # a hard no-op. render_mode is fixed at SimulationContext.__init__ from the launch flags:
-        # headless + enable_cameras => offscreen => PARTIAL (the normal camera path, incl. headless
-        # training), a GUI => FULL, but headless WITHOUT cameras — or any caller that reaches the sim
-        # before enable_cameras/headless are both set at launch — lands at -1, which is terminal
-        # (set_render_mode refuses to leave it). sim.step(render=render_now) drives the low-level
-        # render regardless of render_mode, so RTX sensors (TiledCameras) track the current poses even
-        # in that -1 state, instead of returning the stale first frame. (Equivalent to IsaacLab's
-        # canonical split step(render=False)+render() whenever render_mode is already >= PARTIAL.)
+        # Advance exactly one physics tick. In IsaacSim 5.1, step(render=True) calls
+        # app.update(), which can advance a full rendering interval of physics.
+        # With 200 Hz physics and a render interval of four, mixing three
+        # physics-only calls with one rendered call gives seven ticks per action.
+        # IsaacLab's render() pauses physics while updating graphics, preserving
+        # the configured control rate. Headless cameras must be enabled at launch
+        # so the simulation context has an offscreen rendering mode.
         render_now = is_rendering and self._sim_step_counter % self.simulator_config.sim.render_interval_steps == 0
 
-        # simulate
-        self.sim.step(render=render_now)
+        self.sim.step(render=False)
+        if render_now:
+            self.sim.render()
 
-        # Debug-viz overlay (GUI only): the inline render above replaces the old self.render() call,
-        # so redraw the debug lines here when a render happened and debug viz is on.
+        # Refresh the debug overlay only when a frame was rendered.
         if render_now and self.debug_viz_enabled:
             self.clear_lines()
             self.draw_debug_viz()
