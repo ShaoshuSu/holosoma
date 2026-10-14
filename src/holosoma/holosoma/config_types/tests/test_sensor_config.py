@@ -19,6 +19,7 @@ from holosoma.config_types.sensor import (
     CameraSensorConfig,
     CustomLidarRayPatternConfig,
     GridLidarRayPatternConfig,
+    ImuSensorConfig,
     IsaacGymCameraConfig,
     IsaacSimCameraConfig,
     IsaacSimFisheyeConfig,
@@ -333,6 +334,37 @@ def test_lidar_body_filter_is_backend_neutral_and_validated() -> None:
         LidarBodyFilterConfig(target_kind="robot", target="head_link")
     with pytest.raises(ValueError, match="non-empty name"):
         LidarBodyFilterConfig(target_kind="actor", target=" ")
+
+
+def test_imu_accepts_body_mounts_and_decimation() -> None:
+    link = SensorMountConfig(target_kind="robot_link", target="pelvis")
+    assert ImuSensorConfig(mount=link).update_decimation == 1
+    assert ImuSensorConfig(mount=link, update_decimation="200Hz").update_decimation == "200Hz"
+    actor = SensorMountConfig(target_kind="actor", target="cart")
+    assert ImuSensorConfig(mount=actor).mount.target == "cart"
+
+
+def test_imu_rejects_world_mount() -> None:
+    """Unlike cameras and LiDARs, an IMU must follow a body: MuJoCo would read a constant and
+    IsaacLab's Imu has no rigid body to attach to."""
+    assert CameraSensorConfig(mount=SensorMountConfig(target_kind="world")) is not None
+    with pytest.raises(ValueError, match="does not support mount.target_kind='world'"):
+        ImuSensorConfig(mount=SensorMountConfig(target_kind="world"))
+
+
+def test_imu_rejects_actor_named_robot_and_bad_decimation() -> None:
+    with pytest.raises(ValueError, match="use target_kind='robot_link'"):
+        ImuSensorConfig(mount=SensorMountConfig(target_kind="actor", target="robot"))
+    with pytest.raises(ValueError):
+        ImuSensorConfig(mount=SensorMountConfig(target_kind="robot_link", target="pelvis"), update_decimation="fast")
+
+
+def test_imu_has_no_gravity_knob() -> None:
+    """Gravity comes from the native sensor, so a config field would be a second source of truth."""
+    mount = SensorMountConfig(target_kind="robot_link", target="pelvis")
+    assert not hasattr(ImuSensorConfig(mount=mount), "gravity")
+    with pytest.raises(ValueError):  # extra="forbid"
+        ImuSensorConfig(mount=mount, gravity=[0.0, 0.0, -9.81])  # type: ignore[call-arg]
 
 
 # The camera-frame sink fields (cameras/modalities/record_video/...) live on CameraVizPluginConfig;

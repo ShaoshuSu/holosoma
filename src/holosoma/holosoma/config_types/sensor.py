@@ -1,12 +1,14 @@
 # Copyright 2026 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
-"""Mounted camera and LiDAR configuration types.
+"""Mounted camera, LiDAR, and IMU configuration types.
 
 A sensor is a read-only producer mounted onto an existing body (a robot link or a
 spawned scene actor) that it follows.
 
-Every mounted sensor uses the OpenGL/USD/MuJoCo optical frame: ``-Z`` forward and ``+Y`` up.
-Isaac Gym converts this convention to its native sensor frame internally.
+Cameras and LiDARs use the OpenGL/USD/MuJoCo optical frame: ``-Z`` forward and ``+Y`` up. Isaac Gym
+converts this convention to its native sensor frame internally. :class:`ImuSensorConfig` is the
+exception — an IMU has no optical axis, so it measures in its mount frame as authored (``+X``
+forward, ``+Z`` up).
 """
 
 from __future__ import annotations
@@ -678,7 +680,65 @@ class LidarSensorConfig:
         return self
 
 
-SensorConfig = Union[CameraSensorConfig, LidarSensorConfig]
+@dataclass(frozen=True, config=_FORBID_EXTRA)
+class ImuSensorConfig:
+    """One mounted inertial measurement unit, read from the backend's native IMU.
+
+    Measures in its mount frame as authored — the optical convention in this module's docstring
+    does **not** apply here.
+
+    Semantics follow the native sensor, so they differ by backend:
+
+    - **MuJoCo** solves ``accelerometer`` / ``gyro`` / ``framequat`` on a site analytically,
+      including the centripetal term an offset mount sees, as of the last physics substep.
+    - **Isaac Sim** uses IsaacLab's ``Imu``, which differentiates mount-point velocity over one
+      physics step; expect a few percent disagreement with MuJoCo while the mount body rotates.
+    - **Isaac Gym** Preview 4 has no IMU and rejects this sensor.
+
+    So ``linear_acceleration`` is an instantaneous value on MuJoCo and a one-step difference on
+    Isaac Sim. Measured convergence of the two over an 8x range of physics rates: the Isaac Sim
+    lever-arm term approaches the analytic ``w^2 r`` from +5.0% to +3.0%, the residual being the
+    physical ``alpha x r`` term rather than discretization error.
+
+    Gravity is not configurable: both natives already report specific force (``+9.81`` along the
+    sensor's up axis at rest) from the scene's own gravity, so a field here could only disagree.
+
+    **Isaac Sim cost:** IsaacLab's ``Imu`` only advances its velocity history when read, so
+    ``sensor_setup.refresh_imus`` refreshes every IMU once per physics step to keep that cadence
+    equal to the ``dt`` it divides by. That costs roughly 275 us per IMU per physics step — three
+    PhysX view reads — measured at +20.6% wall clock for four IMUs in one environment at 200 Hz.
+    The per-call cost is fixed, so it amortizes across ``num_envs`` and is negligible for training;
+    it is single-environment runs with several IMUs that pay it. ``update_decimation`` does NOT
+    reduce this, because it governs only how often the value is copied out.
+
+    Keyed by its sensor name in the ``--sensor`` dict, the handle for ``get_imu_data(name, ...)``.
+    """
+
+    mount: SensorMountConfig
+    """Robot link or scene actor the IMU follows, plus its fixed offset in that body's frame."""
+
+    update_decimation: DecimationLike = 1
+    """Sample every Nth control step, or a frequency string such as ``"200Hz"``. Governs only how
+    often the native reading is copied out, not the rate the backend computes it at."""
+
+    @model_validator(mode="after")
+    def validate_imu(self) -> ImuSensorConfig:
+        validate_decimation_like(self.update_decimation, field="ImuSensorConfig update_decimation")
+        # Would read a constant on MuJoCo, and IsaacLab's Imu has no rigid body to attach to.
+        if self.mount.target_kind == "world":
+            raise ValueError(
+                "ImuSensorConfig does not support mount.target_kind='world': an IMU must follow a "
+                "body. Mount it on a robot link (e.g. 'pelvis') or on a registered scene actor."
+            )
+        if self.mount.target_kind == "actor" and self.mount.target == "robot":
+            raise ValueError(
+                "IMU mounts on actor 'robot'; use target_kind='robot_link' "
+                "(name the robot link, e.g. 'pelvis') for the robot."
+            )
+        return self
+
+
+SensorConfig = Union[CameraSensorConfig, LidarSensorConfig, ImuSensorConfig]
 
 
 def validate_camera_dict(cameras: dict[str, CameraSensorConfig]) -> None:

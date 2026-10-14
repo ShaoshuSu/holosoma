@@ -939,7 +939,7 @@ class BaseSimulator:
 
         Called once per control step from the task loop (after sim tensors refresh, before
         observations compute), honoring each sensor's ``update_decimation``. Consumers then do
-        cheap cached reads through the camera/LiDAR accessors."""
+        cheap cached reads through the camera/LiDAR/IMU accessors."""
         raise NotImplementedError("The 'render_sensors' method must be implemented in subclasses.")
 
     def get_camera_data(
@@ -1023,6 +1023,36 @@ class BaseSimulator:
         if data_type not in record.buffers:
             raise RuntimeError(
                 f"LiDAR '{name}' has no '{data_type}' output. Ensure render_sensors() has run. "
+                f"Buffered: {sorted(record.buffers)}."
+            )
+        buf = record.buffer_on(data_type, device)
+        return buf if env_ids is None else buf[env_ids]
+
+    def get_imu_data(
+        self,
+        name: str,
+        data_type: str = "angular_velocity",
+        env_ids: EnvIds | None = None,
+        device: torch.device | str | None = None,
+    ) -> torch.Tensor:
+        """Read an IMU's latest ``angular_velocity``, ``linear_acceleration``, or ``orientation``.
+
+        The two rates are ``float32 [N, 3]`` in the sensor frame — body rates in rad/s, and specific
+        force in m/s² reading ``+9.81`` along the sensor's up axis at rest and zero in free fall.
+        ``orientation`` is ``float32 [N, 4]`` world attitude as ``xyzw``, matching
+        :attr:`rigid_body_quat_w`. Unlike cameras and LiDARs the IMU frame is NOT optical: it is the
+        mount frame as authored (``+X`` forward, ``+Z`` up).
+
+        Values come from the backend's native IMU, so precision differs — MuJoCo is analytic, Isaac
+        Sim differentiates over its own ``dt``, and Isaac Gym has no IMU at all.
+        """
+        if self.sensor_manager is None or not self.sensor_manager.has_imu(name):
+            created = [] if self.sensor_manager is None else self.sensor_manager.imu_names
+            raise NotImplementedError(f"{type(self).__name__} has no IMU '{name}'. Created IMUs: {created}.")
+        record = self.sensor_manager.get_imu(name)
+        if data_type not in record.buffers:
+            raise RuntimeError(
+                f"IMU '{name}' has no '{data_type}' output. Ensure render_sensors() has run. "
                 f"Buffered: {sorted(record.buffers)}."
             )
         buf = record.buffer_on(data_type, device)
