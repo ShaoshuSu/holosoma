@@ -696,9 +696,13 @@ class ImuSensorConfig:
     - **Isaac Gym** Preview 4 has no IMU and rejects this sensor.
 
     So ``linear_acceleration`` is an instantaneous value on MuJoCo and a one-step difference on
-    Isaac Sim. Measured convergence of the two over an 8x range of physics rates: the Isaac Sim
-    lever-arm term approaches the analytic ``w^2 r`` from +5.0% to +3.0%, the residual being the
-    physical ``alpha x r`` term rather than discretization error.
+    Isaac Sim. Comparing two mounts on one body against the centripetal term alone understates the
+    expected difference, because the rigid-body relation is ``alpha x r + w x (w x r)`` and the
+    tangential ``alpha x r`` part is real whenever the body's rate is changing. Measured over an 8x
+    range of physics rates, MuJoCo's excess over ``w^2 r`` is flat at ~6% (analytic, so this is the
+    ``alpha x r`` contribution), while Isaac Sim's falls from +5.0% to +3.0% — dt-dependent, so it
+    carries discretization error on top. The two were not separated quantitatively; ``alpha`` was
+    never measured, though IsaacLab exposes ``ang_acc_b`` if someone wants to.
 
     Gravity is not configurable: both natives already report specific force (``+9.81`` along the
     sensor's up axis at rest) from the scene's own gravity, so a field here could only disagree.
