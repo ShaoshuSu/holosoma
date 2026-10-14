@@ -10,7 +10,6 @@ manager's sorted-key order.
 
 from __future__ import annotations
 
-
 import pytest
 
 from holosoma.config_types.observation import ObservationManagerCfg, ObsGroupCfg, ObsTermCfg
@@ -100,8 +99,10 @@ def test_imu_terms_are_accepted_in_a_concatenated_policy_group() -> None:
     )
     obs = ObservationManager(cfg, env, device="cpu").compute()
 
-    assert obs["policy"].shape == (2, 6)
-    assert torch.equal(obs["policy"], torch.cat([_ACCEL, _GYRO], dim=-1))
+    policy = obs["policy"]
+    assert isinstance(policy, torch.Tensor)  # concatenate=True yields one flat tensor, not a dict
+    assert policy.shape == (2, 6)
+    assert torch.equal(policy, torch.cat([_ACCEL, _GYRO], dim=-1))
 
 
 def test_get_obs_dims_reports_flat_widths() -> None:

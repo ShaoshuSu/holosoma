@@ -160,9 +160,7 @@ def _imu_slices(sensor_record: ImuRecord) -> tuple[tuple[int, int], ...]:
 def _capture_imu_cpu(sim: MuJoCo, sensor_record: ImuRecord) -> None:
     """Read one IMU out of each environment's own ``MjData.sensordata``."""
     (accel_adr, accel_dim), (gyro_adr, gyro_dim), (quat_adr, quat_dim) = _imu_slices(sensor_record)
-    rows = []
-    for env_id in range(sim.num_envs):
-        rows.append(np.asarray(sim.backend.get_render_data(world_id=env_id).sensordata))
+    rows = [np.asarray(sim.backend.get_render_data(world_id=env_id).sensordata) for env_id in range(sim.num_envs)]
     sensordata = torch.from_numpy(np.stack(rows)).to(sim.sim_device)
     finalize_imu_outputs(
         sensor_record,

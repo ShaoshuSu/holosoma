@@ -44,8 +44,8 @@ import sys
 if sys.path and sys.path[0].endswith("simulators"):
     sys.path.pop(0)
 
-from holosoma.utils.sim_utils import setup_simulation_environment  # noqa: E402
-from tests.simulators._sim_harness import build_run_sim_config, run_and_hard_exit, step, steps_for_seconds  # noqa: E402
+from holosoma.utils.sim_utils import setup_simulation_environment
+from tests.simulators._sim_harness import build_run_sim_config, run_and_hard_exit, step, steps_for_seconds
 
 SKIP_EXIT_CODE = 77
 
@@ -112,9 +112,7 @@ def main() -> int:
 
     device = "cpu" if args.simulator == "mujoco" else "cuda:0"
     n = args.num_envs
-    config = dataclasses.replace(
-        config, device=device, training=dataclasses.replace(config.training, num_envs=n)
-    )
+    config = dataclasses.replace(config, device=device, training=dataclasses.replace(config.training, num_envs=n))
     if args.fps is not None:
         config = dataclasses.replace(
             config,
@@ -302,7 +300,8 @@ def main() -> int:
             f"rel={residual[0] / predicted[0].norm():.5f} "
             f"freefall|a|={freefall['identity']:.4f} |w|={spin_omega[0]:.4f} "
             f"|alpha|={alpha[0].norm():.3f}\n"
-            f"{label} PASS: settled identity a={settled} (|a|={rest['identity']['linear_acceleration'][0].norm():.3f}); "
+            f"{label} PASS: settled identity a={settled} "
+            f"(|a|={rest['identity']['linear_acceleration'][0].norm():.3f}); "
             f"spin |w|={spin_omega[0]:.3f} rad/s, two-mount difference matches the rigid-body "
             f"prediction to {residual[0]:.4f} m/s^2"
         )

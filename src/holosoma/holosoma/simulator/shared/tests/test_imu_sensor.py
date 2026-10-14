@@ -28,7 +28,13 @@ def _record(name: str = "imu") -> ImuRecord:
     return ImuRecord(name=name, config=ImuSensorConfig(mount=_MOUNT))
 
 
-def _finalize(record: ImuRecord, *, accel=None, gyro=None, quat_wxyz=None) -> None:
+def _finalize(
+    record: ImuRecord,
+    *,
+    accel: torch.Tensor | None = None,
+    gyro: torch.Tensor | None = None,
+    quat_wxyz: torch.Tensor | None = None,
+) -> None:
     finalize_imu_outputs(
         record,
         linear_acceleration=accel if accel is not None else torch.zeros(1, 3),
@@ -120,7 +126,7 @@ def test_multiple_envs_keep_their_own_rows() -> None:
         ({"quat_wxyz": torch.zeros(2, 1, 4)}, r"orientation must be \[num_envs, 4\]"),
     ],
 )
-def test_wrong_shape_is_rejected_with_the_sensor_name(kwargs: dict, match: str) -> None:
+def test_wrong_shape_is_rejected_with_the_sensor_name(kwargs: dict[str, torch.Tensor], match: str) -> None:
     record = _record(name="torso_imu")
     with pytest.raises(ValueError, match=match) as excinfo:
         _finalize(record, **kwargs)

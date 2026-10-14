@@ -355,7 +355,7 @@ def test_imu_rejects_world_mount() -> None:
 def test_imu_rejects_actor_named_robot_and_bad_decimation() -> None:
     with pytest.raises(ValueError, match="use target_kind='robot_link'"):
         ImuSensorConfig(mount=SensorMountConfig(target_kind="actor", target="robot"))
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="update_decimation"):
         ImuSensorConfig(mount=SensorMountConfig(target_kind="robot_link", target="pelvis"), update_decimation="fast")
 
 
@@ -363,7 +363,7 @@ def test_sensor_configs_reject_unknown_fields() -> None:
     """``_FORBID_EXTRA`` is on every sensor config so a typo'd field fails at construction."""
     mount = SensorMountConfig(target_kind="robot_link", target="pelvis")
     for factory in (ImuSensorConfig, LidarSensorConfig, CameraSensorConfig):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="nonexistent_field"):
             factory(mount=mount, nonexistent_field=1.0)  # type: ignore[call-arg]
 
 
