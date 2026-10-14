@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 import torch
 
@@ -364,3 +364,50 @@ class ObservationManager:
         if term_name in self._term_instances[group_name]:
             return tuple(self._term_instances[group_name][term_name].output_shape(self.env, **term_cfg.params))
         return tuple(self._term_funcs[group_name][term_name](self.env, **term_cfg.params).shape[1:])
+
+    def get_observation_layout(self, group_names: Sequence[str]) -> list[dict[str, Any]]:
+        """Describe the flat vector formed by concatenating ``group_names`` in order.
+
+        One entry per term, in concatenation order: groups as given, terms sorted by name
+        within a group (as in :meth:`compute_group`). A term occupies ``dim * history_length``
+        consecutive values, oldest frame first, with zeros for frames not yet observed. Like
+        :meth:`get_obs_dims`, ``dim`` comes from each term's output shape, so stateful terms
+        do not advance.
+
+        Parameters
+        ----------
+        group_names : Sequence[str]
+            Concatenated observation groups, in the order the policy consumes them.
+
+        Returns
+        -------
+        list[dict[str, Any]]
+            Per-term ``group``, ``name``, ``func``, ``dim``, ``history_length``, ``scale``,
+            ``clip`` and ``params``.
+        """
+        layout: list[dict[str, Any]] = []
+        for group_name in group_names:
+            group_cfg = self.cfg.groups[group_name]
+            if not group_cfg.concatenate:
+                raise ValueError(f"Observation group '{group_name}' is not concatenated, so it has no flat layout.")
+            for term_name in sorted(group_cfg.terms):
+                term_cfg = group_cfg.terms[term_name]
+                shape = self._term_shape(group_name, term_name, term_cfg)
+                if len(shape) != 1:
+                    raise ValueError(
+                        f"Term '{term_name}' in concatenated group '{group_name}' has per-env shape {shape}; "
+                        "concatenated groups require 1-D per-env terms."
+                    )
+                layout.append(
+                    {
+                        "group": group_name,
+                        "name": term_name,
+                        "func": term_cfg.func,
+                        "dim": shape[0],
+                        "history_length": group_cfg.history_length,
+                        "scale": term_cfg.scale,
+                        "clip": term_cfg.clip,
+                        "params": term_cfg.params,
+                    }
+                )
+        return layout

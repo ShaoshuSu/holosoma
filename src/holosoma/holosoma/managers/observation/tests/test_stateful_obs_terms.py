@@ -123,6 +123,18 @@ def test_obs_dims_come_from_output_shape_without_reading_the_term() -> None:
     assert counter.count == 0
 
 
+def test_observation_layout_reads_shapes_without_advancing_the_term() -> None:
+    manager = _manager(history_length=3)
+    counter = _counter(manager)
+    counter.calls.clear()
+
+    layout = manager.get_observation_layout(["policy"])
+
+    assert [(entry["name"], entry["dim"]) for entry in layout] == [("counter", 1), ("plain", 3)]
+    assert counter.calls == ["shape"]
+    assert counter.count == 0
+
+
 def test_default_peek_and_output_shape_use_call_for_side_effect_free_terms() -> None:
     term = ImageTerm(cfg=None, env=None)  # type: ignore[arg-type]
 
