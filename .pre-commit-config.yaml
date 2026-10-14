@@ -10,7 +10,11 @@ repos:
   hooks:
   - id: mypy
     pass_filenames: true
-    additional_dependencies: [pydantic]
+    # 2.10.6 is the last pydantic supporting this config's python_version (3.8); 2.11 moved to 3.9+
+    # and 2.14 to 3.10+. mypy parses every module it follows under python_version, so an unpinned
+    # pydantic resolves to 2.14's `match` statements and dies with a syntax error in pydantic itself
+    # before any of our code is checked. Keep this in step with mypy.ini's python_version.
+    additional_dependencies: [pydantic==2.10.6]
     # This hook runs mypy in an isolated env WITHOUT numpy/torch/warp/mujoco/etc. Those imports
     # then can't be resolved (import-not-found), and where they degrade to Any they make
     # load-bearing `# type: ignore`s look unused and typed returns look like Any. Scope these
