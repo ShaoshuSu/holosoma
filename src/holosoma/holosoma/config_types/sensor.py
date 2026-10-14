@@ -614,7 +614,7 @@ class CameraSensorConfig:
         # The robot is addressed via the ``robot_link`` kind; an ``actor`` mount must not name it.
         if self.mount.target_kind == "actor" and self.mount.target == "robot":
             raise ValueError(
-                "Camera mounts on actor 'robot'; use target_kind='robot_link' "
+                "Camera cannot mount on actor 'robot'; use target_kind='robot_link' "
                 "(name the robot link, e.g. 'pelvis') for the robot."
             )
         return self
@@ -675,7 +675,7 @@ class LidarSensorConfig:
         validate_decimation_like(self.update_decimation, field="LidarSensorConfig update_decimation")
         if self.mount.target_kind == "actor" and self.mount.target == "robot":
             raise ValueError(
-                "LiDAR mounts on actor 'robot'; use target_kind='robot_link' "
+                "LiDAR cannot mount on actor 'robot'; use target_kind='robot_link' "
                 "(name the robot link, e.g. 'pelvis') for the robot."
             )
         return self
@@ -725,7 +725,7 @@ class ImuSensorConfig:
             )
         if self.mount.target_kind == "actor" and self.mount.target == "robot":
             raise ValueError(
-                "IMU mounts on actor 'robot'; use target_kind='robot_link' "
+                "IMU cannot mount on actor 'robot'; use target_kind='robot_link' "
                 "(name the robot link, e.g. 'pelvis') for the robot."
             )
         return self
