@@ -685,6 +685,7 @@ def test_schedule_constants_default_to_the_reference_values_and_are_configurable
     algo.is_multi_gpu = False
     algo.learning_rate = 1e-3
     algo.optimizer = SimpleNamespace(param_groups=[{"lr": 1e-3} for _ in range(4)])
+    algo._STD_GROUP_IDX = 3
     algo._update_learning_rate(torch.tensor(1.0))  # far above desired_kl: decay, floored
     assert algo.learning_rate == 9e-4
 
