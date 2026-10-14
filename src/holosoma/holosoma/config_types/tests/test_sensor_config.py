@@ -369,3 +369,28 @@ def test_sensor_configs_reject_unknown_fields() -> None:
 
 # The camera-frame sink fields (cameras/modalities/record_video/...) live on CameraVizPluginConfig;
 # their validation is covered in config_types/tests/test_plugin_egress_config.py.
+
+
+def test_imu_is_rejected_under_kinematic_playback() -> None:
+    """Playback writes poses without integrating, so it never sets the velocities an IMU needs.
+
+    The guard lives on BaseSimulator because ``kinematic_playback`` is simulator state that a sensor
+    config cannot see. Exercised here against the real method, with a stub carrying only the two
+    attributes it reads.
+    """
+    from holosoma.simulator.base_simulator.base_simulator import BaseSimulator
+
+    sim = BaseSimulator.__new__(BaseSimulator)
+    mount = SensorMountConfig(target_kind="robot_link", target="pelvis")
+    sim.sensor_config = {"imu": ImuSensorConfig(mount=mount), "head": CameraSensorConfig(mount=mount)}
+
+    sim.kinematic_playback = False
+    sim._reject_imus_under_kinematic_playback()  # physics: fine
+
+    sim.kinematic_playback = True
+    with pytest.raises(NotImplementedError, match="kinematic_playback"):
+        sim._reject_imus_under_kinematic_playback()
+
+    # A camera-only rig is untouched by the guard.
+    sim.sensor_config = {"head": CameraSensorConfig(mount=mount)}
+    sim._reject_imus_under_kinematic_playback()

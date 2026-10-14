@@ -10,6 +10,7 @@ from holosoma.config_types.experiment import TrainingConfig
 from holosoma.config_types.full_sim import FullSimConfig
 from holosoma.config_types.robot import RobotConfig
 from holosoma.config_types.scene import SceneConfig
+from holosoma.config_types.sensor import ImuSensorConfig
 from holosoma.config_types.simulator import SimulatorInitConfig
 from holosoma.managers.terrain import TerrainManager
 from holosoma.simulator.base_simulator.hooks import HookRegistry, Phase
@@ -203,6 +204,7 @@ class BaseSimulator:
         self._external_wrench = ExternalWrenchAccumulator(self)
         self.kinematic_playback: bool = self.simulator_config.sim.kinematic_playback
         self._kinematic_time = 0.0
+        self._reject_imus_under_kinematic_playback()
         self.hooks = HookRegistry(base_rates=self._hook_base_rates())
         # Register sensor rendering before plugins so FRAME_END consumers read fresh outputs.
         # This no-ops until a backend builds its sensor manager during setup.
@@ -933,6 +935,25 @@ class BaseSimulator:
         self.set_actor_states(list(names), env_ids, torch.cat([poses, zeros], dim=1))
 
     # ----- Mounted sensor interface -----
+
+    def _reject_imus_under_kinematic_playback(self) -> None:
+        """Fail at construction if an IMU is configured alongside ``sim.kinematic_playback``.
+
+        Kinematic playback writes poses and joint positions without integrating, so nothing ever
+        sets a velocity. Both native IMUs derive their output from velocity, which means the
+        accelerometer would report a constant ``+g`` and the gyro a constant zero no matter how fast
+        the clip moves — a plausible-looking stream that carries no motion. Rejecting is better than
+        recording that silently.
+        """
+        if not self.kinematic_playback:
+            return
+        imu_names = [name for name, config in self.sensor_config.items() if isinstance(config, ImuSensorConfig)]
+        if imu_names:
+            raise NotImplementedError(
+                f"IMU sensors {sorted(imu_names)} cannot be used with sim.kinematic_playback: playback "
+                "never sets velocities, so both backends' IMUs would report a constant +g and zero "
+                "rate regardless of the clip. Drop the IMU, or play the clip back through physics."
+            )
 
     def render_sensors(self) -> None:
         """Capture all due mounted sensors at control frequency into their cached buffers.

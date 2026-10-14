@@ -810,9 +810,8 @@ class IsaacSim(BaseSimulator):
                 self.draw_debug_viz()
 
         self.scene.update(dt=1.0 / self.simulator_config.sim.fps)
-        # Refresh here too: no sim time passed, but advancing the IMU's velocity history past a
-        # state write keeps the NEXT stepped sample from differencing across that discontinuity.
-        sensor_setup.refresh_imus(self)
+        # No refresh_imus here: this path is reached only under sim.kinematic_playback, which
+        # BaseSimulator rejects alongside an IMU because playback never sets velocities.
 
     def _write_external_wrench_native(self, targets: list[WrenchTarget]) -> None:
         """Set world-frame wrenches on the robot articulation and object RigidObjects.

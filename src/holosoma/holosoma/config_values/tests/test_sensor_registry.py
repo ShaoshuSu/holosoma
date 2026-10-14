@@ -65,7 +65,14 @@ def test_cli_rejects_a_world_mounted_imu(capsys: pytest.CaptureFixture[str]) -> 
     with pytest.raises(SystemExit):
         parse_config(
             RunSimConfig,
-            args=["simulator:mujoco", "sensor.imu:g1-pelvis-imu", "--sensor.imu.mount.target-kind=world"],
+            # Clear target as well: leaving it set makes the generic SensorMountConfig check fire
+            # first, so this would pass even with validate_imu's world rejection deleted.
+            args=[
+                "simulator:mujoco",
+                "sensor.imu:g1-pelvis-imu",
+                "--sensor.imu.mount.target-kind=world",
+                "--sensor.imu.mount.target=",
+            ],
         )
 
 

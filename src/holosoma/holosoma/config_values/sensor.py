@@ -70,9 +70,12 @@ custom_lidar = LidarSensorConfig(
 )
 
 # IMU at the G1 pelvis origin. Root link, zero offset, identity rotation, so the sensor frame is the
-# base frame: this preset's gyro must equal the ``base_ang_vel`` obs term exactly, and at rest its
-# accelerometer over 9.81 must equal the negated ``projected_gravity`` term (both in
-# managers/observation/terms/locomotion.py). Override the mount per key for a real device pose.
+# base frame and this preset is directly comparable to the locomotion obs terms: its gyro tracks
+# ``base_ang_vel`` and, at rest, its accelerometer over 9.81 tracks the negated
+# ``projected_gravity``. Expect agreement only up to one physics step, not exactly — on MuJoCo the
+# sensors are solved inside mj_forward, before the integration that advances the qpos/qvel those obs
+# terms read, so the gyro trails by |alpha| * dt whenever the rate is changing. Override the mount
+# per key for a real device pose.
 g1_pelvis_imu = ImuSensorConfig(mount=SensorMountConfig(target_kind="robot_link", target="pelvis"))
 
 # Egocentric G1 head camera, forward-facing.

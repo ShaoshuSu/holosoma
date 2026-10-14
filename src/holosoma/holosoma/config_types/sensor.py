@@ -357,9 +357,10 @@ class SensorMountConfig:
         default_factory=lambda: [1.0, 0.0, 0.0, 0.0], metadata={"validate_default": True}
     )
     """Offset orientation quaternion ``[w, x, y, z]`` (w-first). In the mount-body frame for
-    ``robot_link``/``actor``; in the per-env frame for ``world``. Identity uses the shared
-    optical convention: ``-Z`` forward and ``+Y`` up. Must be unit length; norm deviations
-    up to 1e-4 are normalized."""
+    ``robot_link``/``actor``; in the per-env frame for ``world``. For cameras and LiDARs identity
+    is the optical convention, ``-Z`` forward and ``+Y`` up; for :class:`ImuSensorConfig` identity
+    leaves the sensor's axes equal to the mount body's. Must be unit length; norm deviations up to
+    1e-4 are normalized."""
 
     @model_validator(mode="after")
     def validate_mount(self) -> SensorMountConfig:
@@ -687,12 +688,16 @@ class ImuSensorConfig:
     Measures in its mount frame as authored — the optical convention in this module's docstring
     does **not** apply here.
 
-    ``linear_acceleration`` is an instantaneous value on MuJoCo, which solves
-    ``accelerometer`` / ``gyro`` / ``framequat`` on a site analytically, and a one-step backward
-    difference of mount-point velocity on Isaac Sim, via IsaacLab's ``Imu``. The two therefore
-    disagree while the mount body rotates, with Isaac Sim first-order in the physics timestep.
-    ``angular_velocity`` and ``orientation`` are instantaneous on both. Isaac Gym Preview 4 has no
-    IMU and rejects this sensor.
+    ``linear_acceleration`` is solved analytically on MuJoCo, from ``accelerometer`` / ``gyro`` /
+    ``framequat`` on a site, and is a one-step backward difference of mount-point velocity on Isaac
+    Sim, via IsaacLab's ``Imu``. The two therefore disagree while the mount body rotates, with Isaac
+    Sim first-order in the physics timestep. Isaac Gym Preview 4 has no IMU and rejects this sensor,
+    as does ``sim.kinematic_playback`` on any backend, which never sets the velocities an IMU needs.
+
+    None of the outputs is simultaneous with ``robot_root_states``. MuJoCo solves its sensors inside
+    ``mj_forward``, before the integration that advances the ``qpos``/``qvel`` those tensors proxy,
+    so a reading trails the root state by one physics step — ``|alpha| * dt`` on the rates, which
+    vanishes only while the body's rate is steady.
 
     Both backends report specific force, reading ``+9.81`` along the sensor's up axis at rest.
 

@@ -28,7 +28,7 @@ the spin checks still pass. That is the robot moving, not the sensor misreading.
 checks at the backend's default physics rate; ``--fps`` is for the convergence sweep. Loosening
 REST_ACCEL_TOL to accommodate it would defeat the check, whose job is to catch gravity being wrong.
 
-Exits 0 PASS, 1 FAIL, 77 SKIP.
+Exits 0 PASS, 1 FAIL.
 
   python imu_assert.py --simulator mujoco
   python imu_assert.py --simulator mjwarp   --num-envs 3
@@ -46,8 +46,6 @@ if sys.path and sys.path[0].endswith("simulators"):
 
 from holosoma.utils.sim_utils import setup_simulation_environment
 from tests.simulators._sim_harness import build_run_sim_config, run_and_hard_exit, step, steps_for_seconds
-
-SKIP_EXIT_CODE = 77
 
 GRAVITY = 9.81
 # Settled-state tolerances. The robot is unactuated and collapses onto the plane, so it is never
