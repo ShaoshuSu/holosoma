@@ -144,10 +144,6 @@ class StudentTeacher(nn.Module):
         print(f"Teachers ({num_teachers}x): {self.teachers[0]}")
 
     @property
-    def loaded_teacher(self) -> bool:
-        return all(self._loaded_teacher)
-
-    @property
     def num_teachers(self) -> int:
         return len(self.teachers)
 
