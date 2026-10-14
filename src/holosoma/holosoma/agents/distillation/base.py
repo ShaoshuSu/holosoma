@@ -31,6 +31,7 @@ from torch.utils.tensorboard import SummaryWriter as TensorboardSummaryWriter
 
 from holosoma.agents.base_algo.base_algo import BaseAlgo
 from holosoma.agents.callbacks.base_callback import RLEvalCallback
+from holosoma.agents.distillation.checkpoint import infer_num_teachers_from_checkpoint
 from holosoma.agents.modules.logging_utils import LoggingHelper
 from holosoma.agents.modules.student_teacher_modules import StudentTeacher
 from holosoma.config_types.algo import DistillationConfig, DistillationPPOConfig
@@ -91,12 +92,14 @@ class DistillationBase(BaseAlgo):
             num_gpus=self.gpu_world_size,
         )
 
+        # Index of the next training iteration to run; iterations below it are complete.
         self.current_learning_iteration = 0
         self.eval_callbacks: list[RLEvalCallback] = []
         self.learning_rate = self.config.learning_rate
 
-        # Number of frozen teacher MLPs to build in ``_build_policy``. Set by
-        # ``train_agent.py`` before ``setup()``; defaults to 1. Applications using
+        # Number of frozen teacher MLPs to build in ``_build_policy``. Set before
+        # ``setup()``, from the teacher checkpoints or a saved checkpoint (see
+        # ``restore_structure_from_checkpoint``); defaults to 1. Applications using
         # several teachers must override the policy's ``teacher_act`` to supply a
         # per-sample teacher index.
         self.num_teachers: int = 1
@@ -195,14 +198,23 @@ class DistillationBase(BaseAlgo):
     # --------------------------------------------------------------- obs helpers
 
     def _extract_obs(self, obs_dict: dict[str, Any]) -> dict[str, torch.Tensor]:
-        """Pull the policy inputs out of a manager-produced observation dict.
+        """Pull the training inputs out of a manager-produced observation dict.
 
-        Returns ``actor_obs`` and ``teacher_obs``, plus ``critic_obs`` for algorithms
-        with a critic and ``depth_obs`` for students with a depth backbone.
+        Returns the student inputs (:meth:`_extract_student_obs`) plus ``teacher_obs``,
+        and ``critic_obs`` for algorithms with a critic.
         """
-        obs = {ACTOR_GROUP: obs_dict[ACTOR_GROUP], TEACHER_GROUP: obs_dict[TEACHER_GROUP]}
+        obs = self._extract_student_obs(obs_dict)
+        obs[TEACHER_GROUP] = obs_dict[TEACHER_GROUP]
         if self.uses_critic:
             obs[CRITIC_GROUP] = obs_dict[CRITIC_GROUP]
+        return obs
+
+    def _extract_student_obs(self, obs_dict: dict[str, Any]) -> dict[str, torch.Tensor]:
+        """Pull only the student's inputs: ``actor_obs``, plus ``depth_obs`` with a depth backbone.
+
+        Evaluation uses this, so a trained student runs without the teacher and critic groups.
+        """
+        obs = {ACTOR_GROUP: obs_dict[ACTOR_GROUP]}
         if self.uses_depth:
             entry = obs_dict[self.config.module.depth_obs_group]
             obs["depth_obs"] = entry[self.config.module.depth_obs_term] if isinstance(entry, dict) else entry
@@ -241,7 +253,6 @@ class DistillationBase(BaseAlgo):
         stop_iter = start_iter + total_iters
 
         for it in range(start_iter, stop_iter):
-            self.current_learning_iteration = it
             # Warm-up is an absolute initial-training window. A resumed run must
             # not replay it from zero.
             self._warmup_active = it < self.config.distillation_warmup_steps
@@ -259,11 +270,14 @@ class DistillationBase(BaseAlgo):
             if self.is_main_process:
                 self._post_epoch_logging(it, loss_dict)
 
+            # Iteration ``it`` is complete: the next learn() call or resume starts after it.
+            self.current_learning_iteration = it + 1
+
             if it % self.config.save_interval == 0 and self.is_main_process:
                 self.save(os.path.join(self.log_dir, f"model_{it:05d}.pt"))
 
-        if self.is_main_process:
-            self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration:05d}.pt"))
+        if self.is_main_process and self.current_learning_iteration > start_iter:
+            self.save(os.path.join(self.log_dir, f"model_{self.last_completed_iteration:05d}.pt"))
 
     def _on_iteration_start(self, iteration: int) -> None:
         """Hook run at the start of every training iteration, before the rollout."""
@@ -319,17 +333,33 @@ class DistillationBase(BaseAlgo):
         checkpoint_dict: dict[str, Any] = {
             "model_state_dict": self.policy.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
-            "iter": self.current_learning_iteration,
+            # The last completed iteration, as PPO checkpoints record it.
+            "iter": self.last_completed_iteration,
             "learning_rate": self.learning_rate,
             **self._extra_checkpoint_state(),
             "num_teachers": self.policy.num_teachers,
             "teacher_loaded": list(self.policy.loaded_teachers),
         }
-        checkpoint_dict.update(self._checkpoint_metadata(iteration=self.current_learning_iteration))
+        checkpoint_dict.update(self._checkpoint_metadata(iteration=self.last_completed_iteration))
         env_state = self._collect_env_state()
         if env_state:
             checkpoint_dict["env_state"] = env_state
         self.logging_helper.save_checkpoint_artifact(checkpoint_dict, path)
+
+    @property
+    def last_completed_iteration(self) -> int:
+        """Index of the last completed training iteration, ``-1`` before any."""
+        return self.current_learning_iteration - 1
+
+    def restore_structure_from_checkpoint(self, checkpoint: dict[str, Any]) -> None:
+        """Size the policy like the one ``checkpoint`` was saved from. Call before :meth:`setup`.
+
+        Entrypoints that build the algorithm and then :meth:`load` a full checkpoint use
+        this so a multi-teacher checkpoint loads into a policy with the same teacher slots.
+        """
+        teacher_count = infer_num_teachers_from_checkpoint(checkpoint)
+        if teacher_count is not None:
+            self.num_teachers = teacher_count
 
     def load(self, path: str | None) -> dict[str, Any] | None:  # type: ignore[override]
         if path is None:
@@ -350,7 +380,8 @@ class DistillationBase(BaseAlgo):
                 self.optimizer.load_state_dict(loaded["optimizer_state_dict"])
             except Exception as exc:  # optimizer state has no public signature to validate
                 logger.warning(f"Could not load optimizer state: {exc}")
-        self.current_learning_iteration = int(loaded.get("iter", 0))
+        # ``iter`` is the last completed iteration; training resumes after it.
+        self.current_learning_iteration = int(loaded.get("iter", -1)) + 1
         if "learning_rate" in loaded:
             self.learning_rate = float(loaded["learning_rate"])
         self._restore_extra_checkpoint_state(loaded)
@@ -418,6 +449,25 @@ class DistillationBase(BaseAlgo):
 
         return StudentWrapper(self.policy)
 
+    @torch.no_grad()
+    def _check_export_matches_inference(self, backbone: nn.Module, student: nn.Module) -> None:
+        """Fail if running the exported pair as deployed differs from ``act_inference``.
+
+        Catches a policy whose input preparation the export modules do not reproduce.
+        """
+        assert self.depth_shape is not None
+        generator = torch.Generator(device="cpu").manual_seed(0)
+        actor_obs = torch.randn(4, self.actor_obs_dim, generator=generator).to(self.device)
+        depth_obs = torch.rand(4, *self.depth_shape, generator=generator).to(self.device) - 0.5
+        exported = student(torch.cat([actor_obs, backbone(depth_obs)], dim=-1))
+        expected = self.policy.act_inference({"actor_obs": actor_obs, "depth_obs": depth_obs})
+        if not torch.allclose(exported, expected, rtol=1e-5, atol=1e-6):
+            raise RuntimeError(
+                f"{type(self.policy).__name__}'s export_modules() do not reproduce act_inference "
+                f"(max abs diff {(exported - expected).abs().max().item():.3g}). Prepare the student "
+                "input in _combine_student_input, or override export_modules()."
+            )
+
     def export(self, onnx_file_path: str) -> None:
         """Export the student for deployment.
 
@@ -439,8 +489,10 @@ class DistillationBase(BaseAlgo):
             backbone_path = os.path.join(export_dir, "depth_backbone.onnx")
             student_path = os.path.join(export_dir, "student.onnx")
             assert self.depth_shape is not None
+            backbone, student = self.policy.export_modules()
+            self._check_export_matches_inference(backbone, student)
             torch.onnx.export(
-                self.policy.depth_backbone,
+                backbone,
                 torch.zeros(1, *self.depth_shape, device=self.device),
                 backbone_path,
                 input_names=["depth_image"],
@@ -449,7 +501,7 @@ class DistillationBase(BaseAlgo):
                 dynamo=False,
             )
             torch.onnx.export(
-                self.policy.student,
+                student,
                 torch.zeros(1, self.actor_obs_dim + self.policy.depth_output_dim, device=self.device),
                 student_path,
                 input_names=["obs"],
@@ -486,7 +538,7 @@ class DistillationBase(BaseAlgo):
             "robot_urdf": urdf_str,
             "robot_urdf_path": urdf_file_path,
         }
-        metadata.update(self._checkpoint_metadata(iteration=self.current_learning_iteration))
+        metadata.update(self._checkpoint_metadata(iteration=self.last_completed_iteration))
         attach_onnx_metadata(onnx_path=student_path, metadata=metadata)
 
         for path in exported_paths:
@@ -518,7 +570,7 @@ class DistillationBase(BaseAlgo):
         obs_dict = self.env.reset_all()
         init_actions = torch.zeros(self.env.num_envs, self.num_act, device=self.device)
         actor_state.update({"obs": obs_dict, "actions": init_actions})
-        actor_state["obs"].update(self._extract_obs(obs_dict))
+        actor_state["obs"].update(self._extract_student_obs(obs_dict))
 
         for step in itertools.islice(itertools.count(), max_eval_steps):
             actor_state["step"] = step
@@ -548,7 +600,7 @@ class DistillationBase(BaseAlgo):
     def _pre_eval_env_step(
         self, actor_state: dict[str, Any], eval_policy: Callable[[dict[str, torch.Tensor]], torch.Tensor]
     ) -> dict[str, Any]:
-        actor_state["actions"] = eval_policy(self._extract_obs(actor_state["obs"]))
+        actor_state["actions"] = eval_policy(self._extract_student_obs(actor_state["obs"]))
         for c in self.eval_callbacks:
             actor_state = c.on_pre_eval_env_step(actor_state)
         return actor_state

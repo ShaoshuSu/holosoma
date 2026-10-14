@@ -14,8 +14,8 @@ policy, or its depth-backbone variant. Interface-compatible with
 ``tyro_config.algo._target_``.
 
 The training loop walks a schedule that interpolates between pure DAgger (PPO
-coefficient 0) and nearly-pure PPO (coefficient plateau at 0.9). Under the
-hood we build a single :class:`torch.optim.AdamW` with parameter groups for the
+coefficient 0) and nearly-pure PPO (coefficient plateau ``max_ppo_coef``, 0.9 by
+default). Under the hood we build a single :class:`torch.optim.AdamW` with parameter groups for the
 student, critic, depth backbone (if any), and action ``std``. This lets the depth
 encoder use its own regularization and lets the ``std`` learning rate be zeroed
 while the DAgger phase is active, preventing the action-noise scale from drifting
@@ -156,16 +156,16 @@ class DistillationPPO(DistillationBase):
     # ---------------------------------------------------------- ppo/dagger mix
 
     def adjust_ppo_dagger_coeff(self, iteration: int) -> None:
-        """Ramp the PPO coefficient from 0 to 0.9 between
+        """Ramp the PPO coefficient from 0 to ``max_ppo_coef`` between
         ``ppo_start_epoch`` and ``dagger_end_epoch``."""
         start = self.config.ppo_start_epoch
         end = self.config.dagger_end_epoch
         if iteration < start:
             self.ppo_coef = 0.0
         elif iteration >= end:
-            self.ppo_coef = 0.9
+            self.ppo_coef = self.config.max_ppo_coef
         else:
-            self.ppo_coef = min((iteration - start) / max(end - start, 1), 0.9)
+            self.ppo_coef = min((iteration - start) / max(end - start, 1), self.config.max_ppo_coef)
 
     def _set_std_lr_from_ppo_coef(self) -> None:
         """Zero the std param group's LR while DAgger dominates the loss.
@@ -176,7 +176,7 @@ class DistillationPPO(DistillationBase):
         parameter from the KL-driven adaptive LR decay and let it drift to
         a higher steady-state value than the reference's.
         """
-        std_lr = 0.0 if self.ppo_coef <= 0.1 else self.learning_rate
+        std_lr = 0.0 if self.ppo_coef <= self.config.ppo_active_threshold else self.learning_rate
         self.optimizer.param_groups[self._STD_GROUP_IDX]["lr"] = std_lr
 
     # ------------------------------------------------------------- rollout step
@@ -401,7 +401,7 @@ class DistillationPPO(DistillationBase):
         if (
             self.config.desired_kl is not None  # type: ignore[redundant-expr]
             and self.config.schedule == "adaptive"
-            and self.ppo_coef > 0.1
+            and self.ppo_coef > self.config.ppo_active_threshold
         ):
             # Weight the KL by the gate: with per-sample gating the LR schedule
             # must be driven by the samples PPO actually trains on, otherwise a
@@ -502,18 +502,23 @@ class DistillationPPO(DistillationBase):
             )
             if weights is None:
                 kl_mean = torch.mean(kl)
-            else:
-                # Weighted mean, not a weighted sum: the threshold comparison in
-                # ``_update_learning_rate`` is against an absolute KL, so the
-                # scale must stay independent of how much of the batch is gated.
-                kl_mean = (kl * weights).sum() / weights.sum().clamp(min=1e-6)
-            # Average the KL estimate across ranks so every rank makes the
-            # same adaptive-LR decision. Matches holosoma PPO and the
-            # reference implementation.
+                # Average the KL estimate across ranks so every rank makes the
+                # same adaptive-LR decision. Ranks hold equal batches, so this is
+                # the global mean. Matches holosoma PPO and the reference
+                # implementation.
+                if self.is_multi_gpu:
+                    torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
+                    kl_mean /= self.gpu_world_size
+                return kl_mean
+            # Weighted mean, not a weighted sum: the threshold comparison in
+            # ``_update_learning_rate`` is against an absolute KL, so the scale
+            # must stay independent of how much of the batch is gated. Gates give
+            # ranks different total weights, so reduce the weighted sum and the
+            # weight separately and divide once.
+            totals = torch.stack(((kl * weights).sum(), weights.sum()))
             if self.is_multi_gpu:
-                torch.distributed.all_reduce(kl_mean, op=torch.distributed.ReduceOp.SUM)
-                kl_mean /= self.gpu_world_size
-            return kl_mean
+                torch.distributed.all_reduce(totals, op=torch.distributed.ReduceOp.SUM)
+            return totals[0] / totals[1].clamp(min=1e-6)
 
     def _update_learning_rate(self, kl_mean: torch.Tensor) -> None:
         # Only rank 0 computes the LR update; broadcast the decision so
@@ -522,9 +527,9 @@ class DistillationPPO(DistillationBase):
         # and the all-reduced grads become inconsistent.
         if not self.is_multi_gpu or self.gpu_global_rank == 0:
             if kl_mean > self.config.desired_kl * 2.0:
-                self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                self.learning_rate = max(self.config.min_learning_rate, self.learning_rate / 1.5)
             elif kl_mean < self.config.desired_kl / 2.0 and kl_mean > 0.0:
-                self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                self.learning_rate = min(self.config.max_learning_rate, self.learning_rate * 1.5)
 
         if self.is_multi_gpu:
             lr_tensor = torch.tensor(self.learning_rate, device=self.device)
@@ -532,10 +537,10 @@ class DistillationPPO(DistillationBase):
             self.learning_rate = lr_tensor.item()
 
         # Push the decayed LR to all groups, including the std group when it
-        # is active (ppo_coef > 0.1). Matches the reference implementation,
-        # which updates every param group.
+        # is active (ppo_coef > ppo_active_threshold). Matches the reference
+        # implementation, which updates every param group.
         for idx, group in enumerate(self.optimizer.param_groups):
-            if idx == self._STD_GROUP_IDX and self.ppo_coef <= 0.1:
+            if idx == self._STD_GROUP_IDX and self.ppo_coef <= self.config.ppo_active_threshold:
                 # Still gated to 0 while DAgger dominates; don't overwrite.
                 continue
             group["lr"] = self.learning_rate

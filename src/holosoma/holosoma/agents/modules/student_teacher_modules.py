@@ -396,8 +396,35 @@ class DepthStudentTeacher(StudentTeacher):
     def _student_input(self, actor_obs: torch.Tensor, depth_obs: torch.Tensor | None = None) -> torch.Tensor:
         if depth_obs is None:
             raise ValueError("DepthStudentTeacher.student requires depth_obs")
-        depth_latent = self.depth_backbone(depth_obs)
+        return self._combine_student_input(actor_obs, self.depth_backbone(depth_obs))
+
+    def _combine_student_input(self, actor_obs: torch.Tensor, depth_latent: torch.Tensor) -> torch.Tensor:
+        """Student MLP input from proprioception and the depth latent.
+
+        Override this, not ``_student_input``, to prepare the student's input (e.g. to
+        normalize ``actor_obs``): :meth:`export_modules` includes it in the exported student.
+        """
         return torch.cat([actor_obs, depth_latent], dim=-1)
+
+    def export_modules(self) -> tuple[nn.Module, nn.Module]:
+        """The deployed ``(depth_backbone, student)`` pair.
+
+        The backbone maps a depth image to its latent. The student maps
+        ``[actor_obs | depth_latent]`` to actions, applying :meth:`_combine_student_input`.
+        """
+        return self.depth_backbone, _ExportedDepthStudent(self)
+
+
+class _ExportedDepthStudent(nn.Module):
+    """Student half of a depth policy export: ``[actor_obs | depth_latent]`` -> actions."""
+
+    def __init__(self, policy: DepthStudentTeacher) -> None:
+        super().__init__()
+        self.policy = policy
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        actor_obs, depth_latent = obs.split([self.policy.proprio_dim, self.policy.depth_output_dim], dim=-1)
+        return self.policy.student(self.policy._combine_student_input(actor_obs, depth_latent))
 
 
 class StudentTeacherCritic(StudentTeacher):

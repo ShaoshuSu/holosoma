@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Callable
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -512,6 +513,7 @@ def _build_algo(
     algo_cls: type[Distillation | DistillationPPO],
     env: _FakeEnv,
     tmp_path: Path,
+    before_setup: Callable[[Any], None] | None = None,
     **module_overrides: Any,
 ) -> Any:
     module_overrides.setdefault("depth_backbone", None)
@@ -529,6 +531,8 @@ def _build_algo(
         save_checkpoint_artifact=lambda state, path: torch.save(state, path),
     )
     algo._checkpoint_metadata = lambda **_kwargs: {}
+    if before_setup is not None:
+        before_setup(algo)
     algo.setup()
     return algo
 
@@ -583,3 +587,192 @@ def test_depth_observation_group_and_term_are_configurable(
 
     assert algo.depth_shape == (58, 87)
     assert algo.storage["depth_obs"].shape[2:] == (58, 87)
+
+
+# ------------------------------------------------------- learning-iteration counter
+
+
+@pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
+def test_learning_in_chunks_continues_after_the_completed_iteration(
+    algo_cls: type[Distillation | DistillationPPO],
+) -> None:
+    algo = _stub_learn_loop(algo_cls, [])
+    algo.config.distillation_warmup_steps = 1
+    algo.env = SimpleNamespace(reset_all=dict)
+    algo.is_multi_gpu = False
+    algo.is_main_process = True
+    algo._post_epoch_logging = lambda _it, _losses: None
+    saved: list[str] = []
+    algo.save = saved.append
+    warmup: list[bool] = []
+
+    def rollout(obs: dict[str, Any]) -> dict[str, Any]:
+        warmup.append(algo._warmup_active)
+        return obs
+
+    algo._rollout_step = rollout
+
+    algo_cls.learn(algo, num_learning_iterations=1)
+    algo_cls.learn(algo, num_learning_iterations=1)
+
+    # The second call runs iteration 1, which is past the one-iteration warmup.
+    assert warmup == [True, False]
+    assert algo.current_learning_iteration == 2
+    assert saved == [f"/tmp/run/model_0000{i}.pt" for i in (0, 0, 1, 1)]
+
+
+@pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
+def test_checkpoint_records_the_last_completed_iteration_and_resumes_after_it(
+    algo_cls: type[Distillation | DistillationPPO], tmp_path: Path
+) -> None:
+    source = _checkpointable_algo(algo_cls, tmp_path)
+    source.current_learning_iteration = 5  # iterations 0-4 are complete
+    algo_cls.save(source, str(tmp_path / "model_00004.pt"))
+
+    resumed = _checkpointable_algo(algo_cls, tmp_path)
+    algo_cls.load(resumed, str(tmp_path / "model_00004.pt"))
+
+    assert torch.load(tmp_path / "model_00004.pt")["iter"] == 4
+    assert resumed.current_learning_iteration == 5
+
+
+# ------------------------------------------------------------ gated adaptive KL
+
+
+def _diagonal_gaussian_kl(old_mu: torch.Tensor, mu: torch.Tensor) -> torch.Tensor:
+    # Unit sigmas, as in the test inputs below.
+    return torch.sum(torch.log(torch.tensor(1.0 + 1.0e-5)) + (1.0 + (old_mu - mu) ** 2) / 2.0 - 0.5, dim=-1)
+
+
+def test_gated_kl_is_the_weighted_mean_over_all_ranks(monkeypatch: pytest.MonkeyPatch) -> None:
+    algo = cast("Any", object.__new__(DistillationPPO))
+    algo.is_multi_gpu = True
+    algo.gpu_world_size = 2
+    local_old_mu, local_mu, local_w = torch.zeros(2, 1), torch.tensor([[0.1], [0.3]]), torch.tensor([0.5, 0.5])
+    remote_old_mu, remote_mu, remote_w = torch.zeros(2, 1), torch.tensor([[0.2], [0.0]]), torch.tensor([3.0, 0.0])
+    remote_kl = _diagonal_gaussian_kl(remote_old_mu, remote_mu)
+
+    def fake_all_reduce(stats: torch.Tensor, op: object) -> None:
+        del op
+        stats += torch.stack(((remote_kl * remote_w).sum(), remote_w.sum()))
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
+    ones = torch.ones(2, 1)
+
+    kl = algo._compute_kl_div(local_old_mu, ones, local_mu, ones, weights=local_w)
+
+    kl_all = torch.cat((_diagonal_gaussian_kl(local_old_mu, local_mu), remote_kl))
+    weights_all = torch.cat((local_w, remote_w))
+    torch.testing.assert_close(kl, (kl_all * weights_all).sum() / weights_all.sum())
+
+
+# ------------------------------------------------------------ schedule constants
+
+
+def test_schedule_constants_default_to_the_reference_values_and_are_configurable() -> None:
+    module = StudentTeacherModuleConfig(student_hidden_dims=[4], teacher_hidden_dims=[4], depth_backbone=None)
+    defaults = DistillationPPOConfig(module=module)
+    assert (defaults.max_ppo_coef, defaults.ppo_active_threshold) == (0.9, 0.1)
+    assert (defaults.min_learning_rate, defaults.max_learning_rate) == (1e-5, 1e-2)
+
+    algo = cast("Any", object.__new__(DistillationPPO))
+    algo.config = DistillationPPOConfig(
+        module=module, ppo_start_epoch=0, dagger_end_epoch=10, max_ppo_coef=1.0, min_learning_rate=9e-4
+    )
+    algo.adjust_ppo_dagger_coeff(20)
+    assert algo.ppo_coef == 1.0
+
+    algo.is_multi_gpu = False
+    algo.learning_rate = 1e-3
+    algo.optimizer = SimpleNamespace(param_groups=[{"lr": 1e-3} for _ in range(4)])
+    algo._update_learning_rate(torch.tensor(1.0))  # far above desired_kl: decay, floored
+    assert algo.learning_rate == 9e-4
+
+
+# ------------------------------------------------------------- evaluation inputs
+
+
+@pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
+def test_student_evaluation_needs_only_the_student_inputs(
+    algo_cls: type[Distillation | DistillationPPO], tmp_path: Path
+) -> None:
+    algo = _build_algo(algo_cls, _FakeEnv(depth_group=None), tmp_path)
+    _load_random_teacher(algo, tmp_path)
+    student_obs = {"actor_obs": torch.randn(_FakeEnv.num_envs, 3)}
+
+    state = algo._pre_eval_env_step({"obs": student_obs}, algo.get_inference_policy())
+
+    assert set(algo._extract_student_obs(student_obs)) == {"actor_obs"}
+    assert state["actions"].shape == (_FakeEnv.num_envs, 2)
+
+
+# ------------------------------------------------- multi-teacher checkpoint loading
+
+
+@pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
+def test_evaluation_order_restores_a_multi_teacher_checkpoint(
+    algo_cls: type[Distillation | DistillationPPO], tmp_path: Path
+) -> None:
+    def two_teachers(algo: Any) -> None:
+        algo.num_teachers = 2
+
+    source = _build_algo(algo_cls, _FakeEnv(depth_group=None), tmp_path, before_setup=two_teachers)
+    source.save(str(tmp_path / "model.pt"))
+    checkpoint = torch.load(tmp_path / "model.pt")
+
+    def restore(algo: Any) -> None:
+        algo.restore_structure_from_checkpoint(checkpoint)
+
+    # Eval entrypoint order: construct, restore the saved structure, setup(), load().
+    evaluated = _build_algo(algo_cls, _FakeEnv(depth_group=None), tmp_path, before_setup=restore)
+    evaluated.load(str(tmp_path / "model.pt"))
+
+    assert evaluated.policy.num_teachers == 2
+
+
+# ------------------------------------------------------------ export input prep
+
+
+def _with_policy_override(algo: Any, name: str, method: Callable[..., torch.Tensor]) -> None:
+    algo.policy.__class__ = type("CustomPolicy", (type(algo.policy),), {name: method})
+
+
+@pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
+def test_export_includes_the_policy_student_input_preparation(
+    algo_cls: type[Distillation | DistillationPPO], tmp_path: Path
+) -> None:
+    ort = pytest.importorskip("onnxruntime")
+    algo = _export_ready_algo(algo_cls, tmp_path, depth_backbone=DEPTH_BACKBONE)
+    base = type(algo.policy)._combine_student_input
+
+    def normalized(self: Any, actor_obs: torch.Tensor, depth_latent: torch.Tensor) -> torch.Tensor:
+        return base(self, (actor_obs - 1.0) / 2.0, depth_latent)
+
+    _with_policy_override(algo, "_combine_student_input", normalized)
+
+    algo_cls.export(algo, onnx_file_path=str(tmp_path / "model_00007.onnx"))
+
+    backbone = ort.InferenceSession(str(tmp_path / "model_00007" / "depth_backbone.onnx"))
+    student = ort.InferenceSession(str(tmp_path / "model_00007" / "student.onnx"))
+    depth, actor_obs = torch.rand(1, 58, 87) - 0.5, torch.randn(1, 5)
+    (latent,) = backbone.run(None, {"depth_image": depth.numpy()})
+    (actions,) = student.run(None, {"obs": torch.cat([actor_obs, torch.from_numpy(latent)], dim=1).numpy()})
+    with torch.no_grad():
+        expected = algo.policy.act_inference({"actor_obs": actor_obs, "depth_obs": depth})
+    torch.testing.assert_close(torch.from_numpy(actions), expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
+def test_export_rejects_input_preparation_it_cannot_reproduce(
+    algo_cls: type[Distillation | DistillationPPO], tmp_path: Path
+) -> None:
+    algo = _export_ready_algo(algo_cls, tmp_path, depth_backbone=DEPTH_BACKBONE)
+    base = type(algo.policy)._student_input
+
+    def normalized(self: Any, actor_obs: torch.Tensor, depth_obs: torch.Tensor | None = None) -> torch.Tensor:
+        return base(self, (actor_obs - 1.0) / 2.0, depth_obs)
+
+    _with_policy_override(algo, "_student_input", normalized)
+
+    with pytest.raises(RuntimeError, match="export_modules"):
+        algo_cls.export(algo, onnx_file_path=str(tmp_path / "model_00007.onnx"))

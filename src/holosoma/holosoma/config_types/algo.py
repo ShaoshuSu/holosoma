@@ -430,6 +430,12 @@ class DistillationPPOConfig:
     desired_kl: float = 0.01
     """Desired KL divergence for adaptive learning rate."""
 
+    min_learning_rate: float = 1e-5
+    """Lower bound of the adaptive learning rate."""
+
+    max_learning_rate: float = 1e-2
+    """Upper bound of the adaptive learning rate."""
+
     num_steps_per_env: int = 24
     """Number of rollout steps per environment."""
 
@@ -449,7 +455,15 @@ class DistillationPPOConfig:
     """Iteration at which PPO coefficient begins ramping up from 0."""
 
     dagger_end_epoch: int = 10000
-    """Iteration at which PPO coefficient reaches its plateau (0.9)."""
+    """Iteration at which PPO coefficient reaches its plateau, ``max_ppo_coef``."""
+
+    max_ppo_coef: float = 0.9
+    """Plateau of the PPO coefficient. The imitation term keeps weight
+    ``(1 - max_ppo_coef) * dagger_loss_coef`` after the ramp, so ``1.0`` turns imitation off."""
+
+    ppo_active_threshold: float = 0.1
+    """PPO coefficient above which the action noise std is trained and the adaptive
+    learning rate updates; below it, DAgger dominates and both stay fixed."""
 
     distill_loss_type: str = "mse"
     """``mse`` or ``huber``."""
