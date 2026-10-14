@@ -694,8 +694,7 @@ class ImuSensorConfig:
     ``angular_velocity`` and ``orientation`` are instantaneous on both. Isaac Gym Preview 4 has no
     IMU and rejects this sensor.
 
-    Gravity is not configurable: both natives already report specific force (``+9.81`` along the
-    sensor's up axis at rest) from the scene's own gravity, so a field here could only disagree.
+    Both backends report specific force, reading ``+9.81`` along the sensor's up axis at rest.
 
     On Isaac Sim every IMU is refreshed once per physics step rather than per read, which costs more
     than ``update_decimation`` suggests; see ``sensor_setup.refresh_imus``.

@@ -359,12 +359,12 @@ def test_imu_rejects_actor_named_robot_and_bad_decimation() -> None:
         ImuSensorConfig(mount=SensorMountConfig(target_kind="robot_link", target="pelvis"), update_decimation="fast")
 
 
-def test_imu_has_no_gravity_knob() -> None:
-    """Gravity comes from the native sensor, so a config field would be a second source of truth."""
+def test_sensor_configs_reject_unknown_fields() -> None:
+    """``_FORBID_EXTRA`` is on every sensor config so a typo'd field fails at construction."""
     mount = SensorMountConfig(target_kind="robot_link", target="pelvis")
-    assert not hasattr(ImuSensorConfig(mount=mount), "gravity")
-    with pytest.raises(ValueError):  # extra="forbid"
-        ImuSensorConfig(mount=mount, gravity=[0.0, 0.0, -9.81])  # type: ignore[call-arg]
+    for factory in (ImuSensorConfig, LidarSensorConfig, CameraSensorConfig):
+        with pytest.raises(ValueError):
+            factory(mount=mount, nonexistent_field=1.0)  # type: ignore[call-arg]
 
 
 # The camera-frame sink fields (cameras/modalities/record_video/...) live on CameraVizPluginConfig;

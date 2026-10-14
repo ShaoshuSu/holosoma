@@ -491,9 +491,8 @@ def build_imus(sim: IsaacSim) -> None:
                 rot=tuple(imu.mount.orientation),  # (w, x, y, z), as IsaacLab expects
             ),
             # Report specific force, matching MuJoCo's native accelerometer and real IMU drivers:
-            # +g along the sensor's up axis at rest. Negating the scene's own gravity keeps the two
-            # backends consistent without ImuSensorConfig carrying a gravity field that could
-            # disagree with the scene.
+            # +g along the sensor's up axis at rest. Taken from the scene's own gravity so a scene
+            # that changes it stays consistent.
             gravity_bias=tuple(-component for component in sim.sim.cfg.gravity),
             update_period=0.0,
         )
