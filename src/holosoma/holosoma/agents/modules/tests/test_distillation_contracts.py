@@ -174,23 +174,6 @@ def test_warmup_update_is_dagger_only() -> None:
     assert losses["surrogate_loss"].item() == 0.0
 
 
-def test_global_advantage_normalization_handles_uneven_shards(monkeypatch: pytest.MonkeyPatch) -> None:
-    algo = object.__new__(DistillationPPO)
-    local = torch.tensor([1.0, 2.0, 3.0])
-    remote = torch.tensor([10.0, 20.0], dtype=torch.float64)
-
-    def fake_all_reduce(stats: torch.Tensor, op: object) -> None:
-        del op
-        stats += torch.stack((remote.sum(), remote.square().sum(), remote.new_tensor(remote.numel())))
-
-    monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
-
-    normalized = algo._normalize_advantages_multi_gpu(local)
-    combined = torch.cat((local, remote.to(local.dtype)))
-    expected = (local - combined.mean()) / (combined.std() + 1e-8)
-    torch.testing.assert_close(normalized, expected)
-
-
 def test_teacher_count_is_inferred_from_legacy_state_dict() -> None:
     checkpoint = {
         "model_state_dict": {

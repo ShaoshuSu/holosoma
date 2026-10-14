@@ -33,6 +33,7 @@ from typing_extensions import NotRequired
 
 from holosoma.agents.distillation.base import CRITIC_GROUP, DistillationBase
 from holosoma.agents.distillation_ppo.rollout_storage import RolloutStorageDistillation
+from holosoma.agents.modules.advantages import compute_gae_returns, normalize_advantages
 from holosoma.agents.modules.module_utils import setup_student_teacher_module
 from holosoma.agents.modules.student_teacher_modules import StudentTeacherCritic
 from holosoma.config_types.algo import DistillationPPOConfig
@@ -260,23 +261,8 @@ class DistillationPPO(DistillationBase):
         dones: torch.Tensor,
         rewards: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        advantage = 0.0
-        returns = torch.zeros_like(values)
-        num_steps = returns.shape[0]
-        for step in reversed(range(num_steps)):
-            if step == num_steps - 1:
-                next_values = last_values
-            else:
-                next_values = values[step + 1]
-            next_is_not_terminal = 1.0 - dones[step].float()
-            delta = rewards[step] + next_is_not_terminal * self.config.gamma * next_values - values[step]
-            advantage = delta + next_is_not_terminal * self.config.gamma * self.config.lam * advantage
-            returns[step] = advantage + values[step]
-        advantages = returns - values
-        if self.is_multi_gpu:
-            advantages = self._normalize_advantages_multi_gpu(advantages)
-        else:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        returns = compute_gae_returns(last_values, values, dones, rewards, self.config.gamma, self.config.lam)
+        advantages = normalize_advantages(returns - values, self.gpu_world_size if self.is_multi_gpu else None)
         return returns, advantages
 
     # ------------------------------------------------------------ training step
@@ -553,26 +539,6 @@ class DistillationPPO(DistillationBase):
                 # Still gated to 0 while DAgger dominates; don't overwrite.
                 continue
             group["lr"] = self.learning_rate
-
-    # --------------------------------------------------------------- multi-gpu
-
-    def _normalize_advantages_multi_gpu(self, advantages: torch.Tensor) -> torch.Tensor:
-        stats_dtype = torch.float64 if advantages.dtype != torch.float64 else advantages.dtype
-        values = advantages.to(dtype=stats_dtype)
-        local_stats = torch.stack(
-            (
-                values.sum(),
-                values.square().sum(),
-                values.new_tensor(values.numel()),
-            )
-        )
-        torch.distributed.all_reduce(local_stats, op=torch.distributed.ReduceOp.SUM)
-
-        total, squared_total, count = local_stats
-        global_mean = total / count
-        global_variance = ((squared_total - total.square() / count) / (count - 1).clamp_min(1)).clamp_min(0.0)
-        global_std = global_variance.sqrt()
-        return (advantages - global_mean.to(advantages.dtype)) / (global_std.to(advantages.dtype) + 1e-8)
 
     # ------------------------------------------------------------------- logging
 
