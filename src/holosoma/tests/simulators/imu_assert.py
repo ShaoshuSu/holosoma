@@ -8,18 +8,25 @@ accelerometer's magnitude under motion. This harness covers exactly that gap wit
 expectations:
 
   settled on the plane   |a| == g for every mount; gyro == 0
-                         offset mount == identity mount EXACTLY (a lever arm is inert at rest)
+                         offset mount == identity mount (a lever arm is inert at rest)
                          rotated mount == identity rotated by the mount quaternion
                          orientation == root quat, and == root (x) mount for the rotated one
   in free fall           |a| == 0 for every mount, including the offset one
+  spinning in free fall  a_offset - a_identity == alpha x r + w x (w x r), as vectors
 
-Known limitation — the settled scenario assumes an unactuated robot goes quiet, and how quiet is
-both ``dt``- and engine-dependent. At ``--fps 1600`` on Isaac Sim the collapsed robot still carries
-genuine residual contact acceleration (``|a|`` around 11.4), so the settled checks fail while
-free-fall and the lever-arm checks still pass. That is the robot moving, not the sensor misreading.
-Run the settled checks at the backend's default physics rate; ``--fps`` is for the convergence
-sweep, where free-fall and the lever term are the meaningful signals. Loosening REST_ACCEL_TOL to
-accommodate it would defeat the check, whose job is to catch gravity being wrong.
+The spin check is the one that proves the mount offset is applied at all, and it compares the full
+rigid-body relation rather than the centripetal term alone -- the two terms are perpendicular, so
+checking a magnitude against ``w^2 r`` leaves a systematic offset that masks real error. ``alpha``
+comes from a central difference of the measured ``w``, which is second-order accurate and therefore
+a finer reference than the first-order backward difference a differencing backend uses for
+acceleration.
+
+Known limitation -- the settled scenario assumes an unactuated robot goes quiet, and how quiet is
+both ``dt``- and engine-dependent. At high ``--fps`` on Isaac Sim the collapsed robot still carries
+residual contact acceleration above REST_ACCEL_TOL, so the settled checks fail while free-fall and
+the spin checks still pass. That is the robot moving, not the sensor misreading. Run the settled
+checks at the backend's default physics rate; ``--fps`` is for the convergence sweep. Loosening
+REST_ACCEL_TOL to accommodate it would defeat the check, whose job is to catch gravity being wrong.
 
 Exits 0 PASS, 1 FAIL, 77 SKIP.
 
@@ -59,8 +66,11 @@ FREEFALL_ACCEL_FRACTION = 0.20
 # Commanded body-z rate for the spin scenario. Fast enough that w^2*r (= 4 m/s^2 at r=0.25) is well
 # clear of numerical noise, slow enough that one step does not deform the articulation much.
 SPIN_RATE = 4.0
-SPIN_DELTA_MIN_FRACTION = 0.5  # below this, the offset is being ignored
-SPIN_DELTA_MAX_FRACTION = 2.5  # above this, it is not the centripetal term (alpha x r also lands here)
+OFFSET_IGNORED_FRACTION = 0.5  # below this fraction of the prediction, the mount offset is not applied
+# Absolute residual against the full rigid-body prediction, in m/s^2. Set from the measured
+# first-order error of the differencing backend at its default physics rate, with headroom; see the
+# convergence line the harness prints.
+SPIN_RESIDUAL_TOL = 1.0
 # Steps to run after a teleport before reading. ``set_actor_states`` changes velocity instantly, and
 # a differencing IMU (IsaacLab's) divides that discontinuity by dt — a 1 m/s jump over a 5 ms step
 # reads as 200 m/s^2. Stepping first flushes the velocity history so both samples come from the same
@@ -238,21 +248,46 @@ def main() -> int:
     step(sim, SETTLE_STEPS_AFTER_TELEPORT)
     sim.render_sensors()
 
-    spin_omega = read("identity", "angular_velocity").norm(dim=-1)
-    centripetal = spin_omega**2 * _imu_presets.LEVER_ARM
-    spin_delta = (read("offset", "linear_acceleration") - read("identity", "linear_acceleration")).norm(dim=-1)
+    # Three consecutive samples: the middle one is asserted, the outer two give a central-difference
+    # angular acceleration. Central differencing is O(dt^2), one order better than the O(dt)
+    # backward difference a differencing backend uses for acceleration, so the residual below is
+    # dominated by the sensor under test rather than by this reference.
+    samples = []
+    for _ in range(3):
+        step(sim, 1)
+        sim.render_sensors()
+        samples.append(
+            (
+                read("identity", "angular_velocity").clone(),
+                (read("offset", "linear_acceleration") - read("identity", "linear_acceleration")).clone(),
+            )
+        )
+    (omega_prev, _), (omega, measured_delta), (omega_next, _) = samples
+    alpha = (omega_next - omega_prev) / (2.0 * sim.sim_dt)
+
+    # Full rigid-body relation between two points on one body. Both mounts carry identity
+    # orientation on the same link, so r is the offset in that link's frame and every term here is
+    # already in the frame the sensors report in.
+    lever = torch.tensor([_imu_presets.LEVER_ARM, 0.0, 0.0], device=device).expand(n, 3)
+    predicted = torch.cross(alpha, lever, dim=-1) + torch.cross(omega, torch.cross(omega, lever, dim=-1), dim=-1)
+    residual = (measured_delta - predicted).norm(dim=-1)
+    spin_omega = omega.norm(dim=-1)
+
     if (spin_omega < 0.5 * SPIN_RATE).any():
         _fail(failures, f"spin did not take: measured |w|={spin_omega.tolist()} vs commanded {SPIN_RATE}")
-    elif (spin_delta < SPIN_DELTA_MIN_FRACTION * centripetal).any():
+    elif (measured_delta.norm(dim=-1) < OFFSET_IGNORED_FRACTION * predicted.norm(dim=-1)).any():
         _fail(
             failures,
-            f"offset mount shows no centripetal term: |a_offset - a_identity|={spin_delta.tolist()} "
-            f"but w^2*r={centripetal.tolist()} — the mount offset looks ignored",
+            f"offset mount shows almost no lever-arm term: |a_offset - a_identity|="
+            f"{measured_delta.norm(dim=-1).tolist()} against a predicted {predicted.norm(dim=-1).tolist()} "
+            "— the mount offset looks ignored",
         )
-    elif (spin_delta > SPIN_DELTA_MAX_FRACTION * centripetal).any():
+    elif (residual > SPIN_RESIDUAL_TOL).any():
         _fail(
             failures,
-            f"offset mount centripetal term={spin_delta.tolist()} is far from w^2*r={centripetal.tolist()}",
+            f"two-mount difference {[[round(v, 4) for v in row] for row in measured_delta.tolist()]} does not "
+            f"match the rigid-body prediction {[[round(v, 4) for v in row] for row in predicted.tolist()]} "
+            f"(residual {residual.tolist()} > {SPIN_RESIDUAL_TOL})",
         )
 
     label = f"[{args.simulator}/imu]"
@@ -262,13 +297,14 @@ def main() -> int:
     else:
         settled = [round(value, 3) for value in rest["identity"]["linear_acceleration"][0].tolist()]
         print(
-            f"{label} CONVERGENCE fps={config.simulator.config.sim.fps} dt={sim.sim_dt * 1e3:.3f}ms "
-            f"freefall|a|={freefall['identity']:.4f} (true 0) "
-            f"lever={spin_delta[0]:.4f} vs w^2r={centripetal[0]:.4f} "
-            f"|w|={spin_omega[0]:.4f} (cmd {SPIN_RATE})\n"
+            f"{label} CONVERGENCE fps={config.simulator.config.sim.fps} dt={sim.sim_dt * 1e3:.4f}ms "
+            f"residual={residual[0]:.5f} |predicted|={predicted[0].norm():.4f} "
+            f"rel={residual[0] / predicted[0].norm():.5f} "
+            f"freefall|a|={freefall['identity']:.4f} |w|={spin_omega[0]:.4f} "
+            f"|alpha|={alpha[0].norm():.3f}\n"
             f"{label} PASS: settled identity a={settled} (|a|={rest['identity']['linear_acceleration'][0].norm():.3f}); "
-            f"spin |w|={spin_omega[0]:.3f} rad/s -> measured lever term {spin_delta[0]:.3f} m/s^2 "
-            f"vs w^2*r={centripetal[0]:.3f}"
+            f"spin |w|={spin_omega[0]:.3f} rad/s, two-mount difference matches the rigid-body "
+            f"prediction to {residual[0]:.4f} m/s^2"
         )
     if args.result_file:
         with open(args.result_file, "w") as result:

@@ -513,9 +513,10 @@ def refresh_imus(sim: IsaacSim) -> None:
     two cadences equal.
 
     The same mismatch is present in IsaacLab's own ``manager_based_rl_env`` + ``imu_lin_acc`` term;
-    its ``test_imu`` reads every physics step, which is the cadence assumed here. Costs roughly
-    275 us per IMU per call (three PhysX view reads), so it scales with physics rate and IMU count,
-    and amortizes across ``num_envs``.
+    its ``test_imu`` reads every physics step, which is the cadence assumed here.
+
+    Each call does three PhysX view reads, so the cost scales with physics rate and IMU count and
+    amortizes across ``num_envs``.
     """
     for sensor in sim.imu_sensors.values():
         sensor.data  # noqa: B018 - property access is the documented way to force the update

@@ -687,40 +687,18 @@ class ImuSensorConfig:
     Measures in its mount frame as authored — the optical convention in this module's docstring
     does **not** apply here.
 
-    Semantics follow the native sensor, so they differ by backend:
-
-    - **MuJoCo** solves ``accelerometer`` / ``gyro`` / ``framequat`` on a site analytically,
-      including the centripetal term an offset mount sees, as of the last physics substep.
-    - **Isaac Sim** uses IsaacLab's ``Imu``, which differentiates mount-point velocity over one
-      physics step; expect a few percent disagreement with MuJoCo while the mount body rotates.
-    - **Isaac Gym** Preview 4 has no IMU and rejects this sensor.
-
-    So ``linear_acceleration`` is an instantaneous value on MuJoCo and a one-step difference on
-    Isaac Sim.
-
-    Comparing two mounts on one body against ``w^2 r`` alone understates the expected difference:
-    the rigid-body relation is ``alpha x r + w x (w x r)``, and those two terms are perpendicular,
-    so the magnitude is ``sqrt((w^2 r)^2 + (alpha r)^2)``. Decomposed on MuJoCo with ``r = 0.25 m``
-    and ``w = [0, 0, 4]``, the measured difference is ``[-4.0000, 0.0016, 1.3333]`` against an
-    analytic ``w x (w x r) = [-4.0000, 0, 0]`` — the centripetal part matches to four decimals, and
-    the 1.3333 residual is ``alpha x r`` with ``alpha_y ~ -5.33 rad/s^2``. That is torque-free
-    precession, not actuation: spinning an asymmetric articulation off a principal axis turns the
-    direction of ``w`` while its magnitude stays fixed.
-
-    Hence a ~+5.4% excess over ``w^2 r`` is expected, and MuJoCo's is flat across an 8x range of
-    physics rates. Isaac Sim's falls from +5.0% to +3.0% over the same range, so it carries
-    discretization error on top of the same geometric term.
+    ``linear_acceleration`` is an instantaneous value on MuJoCo, which solves
+    ``accelerometer`` / ``gyro`` / ``framequat`` on a site analytically, and a one-step backward
+    difference of mount-point velocity on Isaac Sim, via IsaacLab's ``Imu``. The two therefore
+    disagree while the mount body rotates, with Isaac Sim first-order in the physics timestep.
+    ``angular_velocity`` and ``orientation`` are instantaneous on both. Isaac Gym Preview 4 has no
+    IMU and rejects this sensor.
 
     Gravity is not configurable: both natives already report specific force (``+9.81`` along the
     sensor's up axis at rest) from the scene's own gravity, so a field here could only disagree.
 
-    **Isaac Sim cost:** IsaacLab's ``Imu`` only advances its velocity history when read, so
-    ``sensor_setup.refresh_imus`` refreshes every IMU once per physics step to keep that cadence
-    equal to the ``dt`` it divides by. That costs roughly 275 us per IMU per physics step — three
-    PhysX view reads — measured at +20.6% wall clock for four IMUs in one environment at 200 Hz.
-    The per-call cost is fixed, so it amortizes across ``num_envs`` and is negligible for training;
-    it is single-environment runs with several IMUs that pay it. ``update_decimation`` does NOT
-    reduce this, because it governs only how often the value is copied out.
+    On Isaac Sim every IMU is refreshed once per physics step rather than per read, which costs more
+    than ``update_decimation`` suggests; see ``sensor_setup.refresh_imus``.
 
     Keyed by its sensor name in the ``--sensor`` dict, the handle for ``get_imu_data(name, ...)``.
     """
