@@ -696,13 +696,20 @@ class ImuSensorConfig:
     - **Isaac Gym** Preview 4 has no IMU and rejects this sensor.
 
     So ``linear_acceleration`` is an instantaneous value on MuJoCo and a one-step difference on
-    Isaac Sim. Comparing two mounts on one body against the centripetal term alone understates the
-    expected difference, because the rigid-body relation is ``alpha x r + w x (w x r)`` and the
-    tangential ``alpha x r`` part is real whenever the body's rate is changing. Measured over an 8x
-    range of physics rates, MuJoCo's excess over ``w^2 r`` is flat at ~6% (analytic, so this is the
-    ``alpha x r`` contribution), while Isaac Sim's falls from +5.0% to +3.0% — dt-dependent, so it
-    carries discretization error on top. The two were not separated quantitatively; ``alpha`` was
-    never measured, though IsaacLab exposes ``ang_acc_b`` if someone wants to.
+    Isaac Sim.
+
+    Comparing two mounts on one body against ``w^2 r`` alone understates the expected difference:
+    the rigid-body relation is ``alpha x r + w x (w x r)``, and those two terms are perpendicular,
+    so the magnitude is ``sqrt((w^2 r)^2 + (alpha r)^2)``. Decomposed on MuJoCo with ``r = 0.25 m``
+    and ``w = [0, 0, 4]``, the measured difference is ``[-4.0000, 0.0016, 1.3333]`` against an
+    analytic ``w x (w x r) = [-4.0000, 0, 0]`` — the centripetal part matches to four decimals, and
+    the 1.3333 residual is ``alpha x r`` with ``alpha_y ~ -5.33 rad/s^2``. That is torque-free
+    precession, not actuation: spinning an asymmetric articulation off a principal axis turns the
+    direction of ``w`` while its magnitude stays fixed.
+
+    Hence a ~+5.4% excess over ``w^2 r`` is expected, and MuJoCo's is flat across an 8x range of
+    physics rates. Isaac Sim's falls from +5.0% to +3.0% over the same range, so it carries
+    discretization error on top of the same geometric term.
 
     Gravity is not configurable: both natives already report specific force (``+9.81`` along the
     sensor's up axis at rest) from the scene's own gravity, so a field here could only disagree.
