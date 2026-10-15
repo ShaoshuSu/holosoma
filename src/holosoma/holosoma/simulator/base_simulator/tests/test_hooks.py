@@ -530,7 +530,8 @@ def test_names_reports_resolved_order_per_phase() -> None:
 
 
 def test_bare_string_dependency_is_rejected() -> None:
+    # A str satisfies Sequence[str], so the types allow this and only the runtime guard catches it.
     hooks = HookRegistry()
 
     with pytest.raises(HookRegistryError, match="pass a sequence of hook names"):
-        hooks.add(Phase.FRAME_END, lambda: None, name="a", after="render")  # type: ignore[arg-type]
+        hooks.add(Phase.FRAME_END, lambda: None, name="a", after="render")
