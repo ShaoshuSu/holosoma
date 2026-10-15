@@ -236,17 +236,26 @@ TEACHER_POLICY_TYPES: dict[str, type[TeacherPolicy]] = {cls.TYPE: cls for cls in
 
 
 def build_teacher(config: dict[str, Any]) -> TeacherPolicy:
-    """Rebuild a teacher's structure from :meth:`TeacherPolicy.construction_config`; weights are not loaded."""
+    """Rebuild a teacher's structure from :meth:`TeacherPolicy.construction_config`; weights are not loaded.
+
+    The global RNG is left untouched: the initial weights are about to be replaced, and loading a
+    teacher should not change the random stream training continues with.
+    """
     teacher_type = config.get("type")
     if teacher_type not in TEACHER_POLICY_TYPES:
         raise ValueError(f"Unknown teacher type {teacher_type!r}; known types: {sorted(TEACHER_POLICY_TYPES)}.")
-    return TEACHER_POLICY_TYPES[teacher_type].from_construction_config(config)
+    with torch.random.fork_rng(devices=[]):
+        return TEACHER_POLICY_TYPES[teacher_type].from_construction_config(config)
 
 
 def teacher_from_checkpoint(checkpoint: dict[str, Any], num_obs: int, num_actions: int) -> TeacherPolicy:
-    """Rebuild the teacher a training checkpoint was saved from, weights loaded strictly."""
+    """Rebuild the teacher a training checkpoint was saved from, weights loaded strictly.
+
+    Like :func:`build_teacher`, this leaves the global RNG untouched.
+    """
     if PPOTeacher.matches(checkpoint):
-        return PPOTeacher.from_checkpoint(checkpoint, num_obs=num_obs, num_actions=num_actions)
+        with torch.random.fork_rng(devices=[]):
+            return PPOTeacher.from_checkpoint(checkpoint, num_obs=num_obs, num_actions=num_actions)
     raise ValueError(
         "Unsupported teacher checkpoint: expected a holosoma PPO checkpoint with actor_model_state_dict "
         f"and experiment_config. Got keys {sorted(checkpoint)[:10]}."

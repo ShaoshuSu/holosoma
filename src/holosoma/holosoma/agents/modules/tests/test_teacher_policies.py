@@ -111,3 +111,14 @@ def test_construction_config_rebuilds_the_same_teacher(
 def test_unknown_teacher_types_are_rejected() -> None:
     with pytest.raises(ValueError, match="Unknown teacher type"):
         build_teacher({"type": "transformer"})
+
+
+def test_building_teachers_leaves_the_global_rng_untouched(make_ppo_teacher_checkpoint: MakeCheckpoint) -> None:
+    checkpoint, _ = make_ppo_teacher_checkpoint(3, 2, [4])
+    state = torch.get_rng_state()
+
+    teacher = teacher_from_checkpoint(checkpoint, num_obs=3, num_actions=2)
+    build_teacher(teacher.construction_config())
+
+    assert torch.equal(torch.get_rng_state(), state)
+
