@@ -15,7 +15,7 @@ from holosoma.agents.distillation.distillation import Distillation
 from holosoma.agents.distillation_ppo.distillation_ppo import DistillationMinibatch, DistillationPPO
 from holosoma.agents.modules.module_utils import setup_depth_student_teacher_module, setup_student_teacher_module
 from holosoma.agents.modules.student_teacher_modules import StudentTeacher
-from holosoma.agents.ppo.ppo import EmpiricalNormalization
+from holosoma.agents.modules.teacher_policies import MLPTeacher, PPOTeacher
 from holosoma.config_types.algo import DistillationConfig, DistillationPPOConfig, StudentTeacherModuleConfig
 from holosoma.train_agent import infer_num_teachers_from_checkpoint
 from holosoma.utils.safe_torch_import import torch
@@ -242,18 +242,18 @@ def test_legacy_checkpoint_does_not_certify_teacher_weights(
     algo_cls: type[Distillation | DistillationPPO],
     tmp_path: Path,
 ) -> None:
-    policy = StudentTeacher(
-        num_actor_obs=2,
-        num_teacher_obs=3,
-        num_actions=1,
-        student_hidden_dims=[2],
-        teacher_hidden_dims=[2],
-    )
+    policy = StudentTeacher(num_actor_obs=2, num_teacher_obs=3, num_actions=1, student_hidden_dims=[2])
+    legacy_teacher = MLPTeacher(num_obs=3, hidden_dims=[2], num_actions=1, activation="ELU")
+    legacy_state = {
+        **policy.state_dict(),
+        **{f"teachers.0.{key}": value for key, value in legacy_teacher.mlp.state_dict().items()},
+    }
     checkpoint = tmp_path / "legacy.pt"
-    torch.save({"model_state_dict": policy.state_dict()}, checkpoint)
+    torch.save({"model_state_dict": legacy_state}, checkpoint)
 
     algo = cast("Any", object.__new__(algo_cls))
     algo.device = "cpu"
+    algo.config = SimpleNamespace(module=SimpleNamespace(teacher_hidden_dims=[2], activation="ELU"))
     algo.policy = policy
     algo._restore_env_state = lambda _state: None
     algo_cls.load(algo, str(checkpoint))
@@ -261,30 +261,6 @@ def test_legacy_checkpoint_does_not_certify_teacher_weights(
     assert policy.loaded_teachers == (False,)
     with pytest.raises(RuntimeError, match="not loaded"):
         policy.require_loaded_teachers()
-
-
-def _write_ppo_teacher_checkpoint(
-    path: Path, *, normalize: bool
-) -> tuple[torch.nn.Module, EmpiricalNormalization | None]:
-    """Write a holosoma PPO checkpoint for a 3-obs, 2-action teacher."""
-    torch.manual_seed(0)
-    teacher = torch.nn.Sequential(torch.nn.Linear(3, 4), torch.nn.ELU(), torch.nn.Linear(4, 2))
-    actor_state = {f"actor_module.module.{key}": value for key, value in teacher.state_dict().items()}
-    actor_state["std"] = torch.ones(2)
-    normalizer = None
-    if normalize:
-        normalizer = EmpiricalNormalization(shape=3, device="cpu")
-        normalizer(torch.randn(64, 3) * torch.tensor([0.5, 2.0, 4.0]) + torch.tensor([1.0, -3.0, 10.0]))
-        normalizer.eval()
-    torch.save(
-        {
-            "actor_model_state_dict": actor_state,
-            "actor_obs_normalizer_state_dict": normalizer.state_dict() if normalizer is not None else None,
-            "iter": 100,
-        },
-        path,
-    )
-    return teacher, normalizer
 
 
 def _checkpointable_algo(algo_cls: type[Distillation | DistillationPPO], log_dir: Path) -> Any:
@@ -295,7 +271,6 @@ def _checkpointable_algo(algo_cls: type[Distillation | DistillationPPO], log_dir
         num_teacher_obs=3,
         num_actions=2,
         student_hidden_dims=[4],
-        teacher_hidden_dims=[4],
     )
     algo.optimizer = torch.optim.Adam(algo.policy.student.parameters())
     algo.current_learning_iteration = 0
@@ -315,24 +290,32 @@ def test_teacher_runs_on_its_ppo_normalized_observations(
     algo_cls: type[Distillation | DistillationPPO],
     normalize: bool,
     tmp_path: Path,
+    make_ppo_teacher_checkpoint: Callable[..., Any],
+    make_fitted_normalizer: Callable[..., Any],
 ) -> None:
-    teacher, normalizer = _write_ppo_teacher_checkpoint(tmp_path / "teacher.pt", normalize=normalize)
+    normalizer = make_fitted_normalizer(3) if normalize else None
+    checkpoint, actor = make_ppo_teacher_checkpoint(3, 2, [4], normalizer=normalizer)
+    torch.save(checkpoint, tmp_path / "teacher.pt")
     algo = _checkpointable_algo(algo_cls, tmp_path)
 
     algo_cls.load_teacher(algo, str(tmp_path / "teacher.pt"))
 
     obs = torch.randn(5, 3) * 3.0
     teacher_input = normalizer(obs, update=False) if normalizer is not None else obs
-    torch.testing.assert_close(algo.policy.teacher_act(obs).actions, teacher(teacher_input), rtol=0.0, atol=0.0)
+    expected = actor.act_inference({"actor_obs": teacher_input})
+    torch.testing.assert_close(algo.policy.teacher_act(obs).actions, expected, rtol=0.0, atol=0.0)
 
 
 @pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
-def test_teacher_normalizer_round_trips_through_full_checkpoint(
+def test_teacher_round_trips_through_full_checkpoint(
     algo_cls: type[Distillation | DistillationPPO],
     tmp_path: Path,
+    make_ppo_teacher_checkpoint: Callable[..., Any],
+    make_fitted_normalizer: Callable[..., Any],
 ) -> None:
-    teacher, normalizer = _write_ppo_teacher_checkpoint(tmp_path / "teacher.pt", normalize=True)
-    assert normalizer is not None
+    normalizer = make_fitted_normalizer(3)
+    checkpoint, actor = make_ppo_teacher_checkpoint(3, 2, [4], normalizer=normalizer)
+    torch.save(checkpoint, tmp_path / "teacher.pt")
     source = _checkpointable_algo(algo_cls, tmp_path)
     algo_cls.load_teacher(source, str(tmp_path / "teacher.pt"))
     algo_cls.save(source, str(tmp_path / "model_00000.pt"))
@@ -340,11 +323,12 @@ def test_teacher_normalizer_round_trips_through_full_checkpoint(
     resumed = _checkpointable_algo(algo_cls, tmp_path)
     algo_cls.load(resumed, str(tmp_path / "model_00000.pt"))
 
+    # The resumed policy rebuilt the PPO teacher from the saved construction config alone.
     obs = torch.randn(5, 3) * 3.0
     assert resumed.policy.loaded_teachers == (True,)
-    torch.testing.assert_close(
-        resumed.policy.teacher_act(obs).actions, teacher(normalizer(obs, update=False)), rtol=0.0, atol=0.0
-    )
+    assert isinstance(resumed.policy.teachers[0], PPOTeacher)
+    expected = actor.act_inference({"actor_obs": normalizer(obs, update=False)})
+    torch.testing.assert_close(resumed.policy.teacher_act(obs).actions, expected, rtol=0.0, atol=0.0)
 
 
 def _export_ready_algo(
@@ -539,19 +523,19 @@ def _build_algo(
     return algo
 
 
-def _load_random_teacher(algo: Any, tmp_path: Path) -> None:
-    teacher = torch.nn.Sequential(torch.nn.Linear(3, 4), torch.nn.ELU(), torch.nn.Linear(4, 2))
+def _load_random_teacher(algo: Any, tmp_path: Path, make_checkpoint: Callable[..., Any]) -> None:
+    checkpoint, _ = make_checkpoint(3, 2, [4])
     path = tmp_path / "teacher.pt"
-    torch.save({"actor_model_state_dict": {f"actor.{k}": v for k, v in teacher.state_dict().items()}}, path)
+    torch.save(checkpoint, path)
     algo.load_teacher(str(path))
 
 
 @pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
 def test_student_without_depth_backbone_trains_on_proprioception_only(
-    algo_cls: type[Distillation | DistillationPPO], tmp_path: Path
+    algo_cls: type[Distillation | DistillationPPO], tmp_path: Path, make_ppo_teacher_checkpoint: Callable[..., Any]
 ) -> None:
     algo = _build_algo(algo_cls, _FakeEnv(depth_group=None), tmp_path)
-    _load_random_teacher(algo, tmp_path)
+    _load_random_teacher(algo, tmp_path, make_ppo_teacher_checkpoint)
     before = copy.deepcopy(algo.policy.student.state_dict())
 
     algo.learn()
@@ -573,7 +557,7 @@ def test_depth_group_is_required_only_with_a_depth_backbone(
 
 @pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
 def test_depth_observation_group_and_term_are_configurable(
-    algo_cls: type[Distillation | DistillationPPO], tmp_path: Path
+    algo_cls: type[Distillation | DistillationPPO], tmp_path: Path, make_ppo_teacher_checkpoint: Callable[..., Any]
 ) -> None:
     algo = _build_algo(
         algo_cls,
@@ -583,7 +567,7 @@ def test_depth_observation_group_and_term_are_configurable(
         depth_obs_group="head_camera",
         depth_obs_term="depth",
     )
-    _load_random_teacher(algo, tmp_path)
+    _load_random_teacher(algo, tmp_path, make_ppo_teacher_checkpoint)
 
     algo.learn()
 
@@ -697,10 +681,10 @@ def test_schedule_constants_default_to_the_reference_values_and_are_configurable
 
 @pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
 def test_student_evaluation_needs_only_the_student_inputs(
-    algo_cls: type[Distillation | DistillationPPO], tmp_path: Path
+    algo_cls: type[Distillation | DistillationPPO], tmp_path: Path, make_ppo_teacher_checkpoint: Callable[..., Any]
 ) -> None:
     algo = _build_algo(algo_cls, _FakeEnv(depth_group=None), tmp_path)
-    _load_random_teacher(algo, tmp_path)
+    _load_random_teacher(algo, tmp_path, make_ppo_teacher_checkpoint)
     student_obs = {"actor_obs": torch.randn(_FakeEnv.num_envs, 3)}
 
     state = algo._pre_eval_env_step({"obs": student_obs}, algo.get_inference_policy())

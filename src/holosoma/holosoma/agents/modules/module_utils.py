@@ -101,7 +101,7 @@ def setup_student_teacher_module(
 
     Builds a :class:`DepthStudentTeacherCritic` when ``module_config.depth_backbone``
     is set, and a proprioception-only :class:`StudentTeacherCritic` otherwise.
-    ``num_teachers`` controls how many frozen teacher MLPs are built.
+    ``num_teachers`` sets the number of teacher slots, filled when teachers are loaded.
 
     ``module_cls`` lets an application substitute a subclass -- e.g. one that
     derives the per-env teacher index from the observation rather than taking it
@@ -114,7 +114,6 @@ def setup_student_teacher_module(
         "num_critic_obs": num_critic_obs,
         "num_actions": num_actions,
         "student_hidden_dims": list(module_config.student_hidden_dims),
-        "teacher_hidden_dims": list(module_config.teacher_hidden_dims),
         "critic_hidden_dims": list(module_config.critic_hidden_dims),
         "activation": module_config.activation,
         "init_noise_std": init_noise_std,
@@ -151,7 +150,6 @@ def setup_depth_student_teacher_module(
         "num_teacher_obs": num_teacher_obs,
         "num_actions": num_actions,
         "student_hidden_dims": list(module_config.student_hidden_dims),
-        "teacher_hidden_dims": list(module_config.teacher_hidden_dims),
         "activation": module_config.activation,
         "init_noise_std": init_noise_std,
         "num_teachers": num_teachers,

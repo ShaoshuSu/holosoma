@@ -31,7 +31,11 @@ from torch.utils.tensorboard import SummaryWriter as TensorboardSummaryWriter
 
 from holosoma.agents.base_algo.base_algo import BaseAlgo
 from holosoma.agents.callbacks.base_callback import RLEvalCallback
-from holosoma.agents.distillation.checkpoint import infer_num_teachers_from_checkpoint
+from holosoma.agents.distillation.checkpoint import (
+    convert_legacy_teacher_state,
+    infer_num_teachers_from_checkpoint,
+    legacy_mlp_teacher_configs,
+)
 from holosoma.agents.modules.logging_utils import LoggingHelper
 from holosoma.agents.modules.student_teacher_modules import StudentTeacher
 from holosoma.config_types.algo import DistillationConfig, DistillationPPOConfig
@@ -261,9 +265,7 @@ class DistillationBase(BaseAlgo):
     # --------------------------------------------------------------- train mode
 
     def _train_mode(self) -> None:
-        self.policy.train()
-        # A .train() on the composite flips every submodule; teachers stay frozen.
-        self.policy.teachers.eval()
+        self.policy.train()  # teachers stay in eval mode; see StudentTeacher.train
 
     def _eval_mode(self) -> None:
         self.policy.eval()
@@ -369,6 +371,7 @@ class DistillationBase(BaseAlgo):
             **self._extra_checkpoint_state(),
             "num_teachers": self.policy.num_teachers,
             "teacher_loaded": list(self.policy.loaded_teachers),
+            "teacher_configs": self.policy.teacher_construction_configs(),
         }
         checkpoint_dict.update(self._checkpoint_metadata(iteration=self.last_completed_iteration))
         env_state = self._collect_env_state()
@@ -396,7 +399,20 @@ class DistillationBase(BaseAlgo):
             return None
         logger.info(f"Loading {type(self).__name__} checkpoint from {path}")
         loaded = torch.load(path, map_location=self.device)
-        self.policy.load_training_state_dict(loaded["model_state_dict"])
+        state_dict = loaded["model_state_dict"]
+        teacher_configs = loaded.get("teacher_configs")
+        if teacher_configs is None:
+            # Saved before teachers recorded their construction: rebuild them as the MLPs it used.
+            state_dict = convert_legacy_teacher_state(state_dict, self.policy.num_teachers)
+            teacher_configs = legacy_mlp_teacher_configs(
+                state_dict,
+                self.policy.num_teachers,
+                hidden_dims=list(self.config.module.teacher_hidden_dims),
+                activation=self.config.module.activation,
+                num_actions=self.policy.num_actions,
+            )
+        self.policy.build_teachers(teacher_configs)
+        self.policy.load_state_dict(state_dict, strict=True)
         teacher_loaded = loaded.get("teacher_loaded")
         if teacher_loaded is None:
             logger.warning(
@@ -417,19 +433,13 @@ class DistillationBase(BaseAlgo):
         self._restore_extra_checkpoint_state(loaded)
         self.policy.project_action_std()
         self._restore_env_state(loaded.get("env_state"))
-        self.policy.teachers.eval()
-        for p in self.policy.teachers.parameters():
-            p.requires_grad_(False)
         return cast("dict[str, Any] | None", loaded.get("infos"))
 
     def load_teacher(self, paths: str | list[str]) -> None:
-        """Load one or more teacher-only checkpoints into ``policy.teachers``.
+        """Rebuild ``policy.teachers`` from teacher training checkpoints, one path per slot.
 
-        Accepts a single path or a list of paths, one per teacher slot in the same
-        order as ``policy.teachers``. Each path may be a holosoma PPO checkpoint
-        (``actor_model_state_dict``, plus its observation normalizer if it was
-        trained with one) or a raw state dict. Key renaming is delegated to
-        :meth:`StudentTeacher.load_teacher_state_dict`.
+        Each teacher is reconstructed from its own checkpoint and loaded strictly; see
+        :func:`holosoma.agents.modules.teacher_policies.teacher_from_checkpoint`.
         """
         if isinstance(paths, str):
             paths = [paths]
@@ -440,21 +450,8 @@ class DistillationBase(BaseAlgo):
                 f"with matching num_teachers or pass the correct number of paths."
             )
         for i, path in enumerate(paths):
-            logger.info(f"Loading teacher[{i}] weights from {path}")
-            loaded = torch.load(path, map_location=self.device)
-            if isinstance(loaded, dict) and "actor_model_state_dict" in loaded:
-                # A teacher trained with empirical_normalization only works on normalized obs.
-                teacher_ckpt = {
-                    "model_state_dict": loaded["actor_model_state_dict"],
-                    "actor_obs_normalizer_state_dict": loaded.get("actor_obs_normalizer_state_dict"),
-                }
-            else:
-                teacher_ckpt = loaded
-            self.policy.load_teacher_state_dict(teacher_ckpt, strict=True, teacher_index=i)
-        for t in self.policy.teachers:
-            t.eval()
-            for p in t.parameters():
-                p.requires_grad_(False)
+            logger.info(f"Loading teacher[{i}] from {path}")
+            self.policy.load_teacher_checkpoint(torch.load(path, map_location="cpu"), teacher_index=i)
 
     # --------------------------------------------------------- inference / eval
 

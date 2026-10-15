@@ -692,6 +692,9 @@ class PPO(BaseAlgo):
             ),
             "iter": self.current_learning_iteration,
             "infos": infos,
+            # The actor's input layout, so a distillation student can rebuild it as a teacher.
+            "obs_dim_dict": self.algo_obs_dim_dict,
+            "history_length_dict": self.algo_history_length_dict,
         }
         checkpoint_dict.update(self._checkpoint_metadata(iteration=self.current_learning_iteration))
         env_state = self._collect_env_state()

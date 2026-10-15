@@ -363,7 +363,9 @@ class StudentTeacherModuleConfig:
     """Student MLP hidden layer widths."""
 
     teacher_hidden_dims: List[int] = field(default_factory=lambda: [512, 256, 128])
-    """Teacher MLP hidden layer widths. Must match the teacher checkpoint being loaded."""
+    """Hidden layer widths of the MLP teachers in student checkpoints saved before teachers recorded
+    their construction; used only to rebuild those. Teachers are otherwise rebuilt from their own
+    checkpoints, so this does not need to match a new teacher."""
 
     critic_hidden_dims: List[int] = field(default_factory=lambda: [512, 256, 128])
     """Critic MLP hidden layer widths. Ignored by :class:`DistillationConfig`, which has no critic."""
