@@ -180,7 +180,9 @@ class IsaacGym(BaseSimulator):
         sim_params.physx.max_gpu_contact_pairs = self.robot_config.contact_pairs_multiplier * 1024 * 1024
         sim_params.use_gpu_pipeline = True
 
-        gymutil.parse_sim_config(dataclasses.asdict(self.simulator_config.sim), sim_params)
+        gym_config = dataclasses.asdict(self.simulator_config.sim)
+        gym_config.pop("mujoco")  # Inactive backend settings do not belong to IsaacGym's native parser.
+        gymutil.parse_sim_config(gym_config, sim_params)
         return sim_params
 
     def get_supported_scene_formats(self) -> list[str]:
