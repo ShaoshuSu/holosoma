@@ -36,6 +36,7 @@ class DaggerMinibatch(TypedDict):
     depth_obs: NotRequired[torch.Tensor]
     actions: torch.Tensor
     teacher_actions: torch.Tensor
+    teacher_valid: torch.Tensor
     dones: torch.Tensor
 
 
@@ -91,13 +92,14 @@ class Distillation(DistillationBase):
 
                 # Student samples an action; teacher provides the DAgger target.
                 actions = self.policy.act(obs)
-                teacher_actions = self.policy.teacher_act(obs["teacher_obs"]).detach()
+                teacher = self.policy.teacher_act(obs["teacher_obs"])
+                teacher_actions = teacher.actions.detach()
 
                 # Warm-up: follow teacher actions so the student sees expert
                 # trajectories before its policy is competent. Still record the
                 # student's sampled action so the update step's distribution
                 # state is consistent with what would have been taken.
-                step_actions = teacher_actions if self._warmup_active else actions
+                step_actions = self._step_actions(actions, teacher_actions, teacher.valid, self._warmup_active)
                 next_obs, rewards, dones, infos = self.env.step({"actions": step_actions})
                 next_obs = self._obs_to_device(next_obs)
                 rewards, dones = rewards.to(self.device), dones.to(self.device)
@@ -106,6 +108,7 @@ class Distillation(DistillationBase):
                     **obs,
                     actions=actions,
                     teacher_actions=teacher_actions,
+                    teacher_valid=teacher.valid.view(-1, 1),
                     dones=dones.view(-1, 1),
                 )
                 self.policy.reset(dones)
@@ -132,10 +135,10 @@ class Distillation(DistillationBase):
 
             # Deterministic student forward (distribution mean); this is what
             # the reference implementation uses for behavior cloning, not a
-            # sampled action. Matches the reference DepthDistillation.update():
-            # simple MSE, no expert-terminate mask.
+            # sampled action. Rows without a teacher are masked out.
             student_mean = self.policy.student(self.policy._student_input(actor_obs, depth_obs))
-            loss = self.distill_loss_fn(student_mean, teacher_actions)
+            target = self._dagger_target(student_mean, teacher_actions, mini_batch["teacher_valid"])
+            loss = self.distill_loss_fn(student_mean, target)
 
             self.optimizer.zero_grad()
             loss.backward()

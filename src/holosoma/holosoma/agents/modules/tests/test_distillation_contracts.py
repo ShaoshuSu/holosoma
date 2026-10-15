@@ -10,6 +10,7 @@ from typing import Any, cast
 
 import pytest
 
+from holosoma.agents.distillation.base import DistillationBase
 from holosoma.agents.distillation.distillation import Distillation
 from holosoma.agents.distillation_ppo.distillation_ppo import DistillationMinibatch, DistillationPPO
 from holosoma.agents.modules.module_utils import setup_depth_student_teacher_module, setup_student_teacher_module
@@ -165,6 +166,7 @@ def test_warmup_update_is_dagger_only() -> None:
                 "critic_obs": torch.tensor([[1.0, 1.0]]),
                 "actions": torch.zeros(1, 1),
                 "teacher_actions": torch.ones(1, 1),
+                "teacher_valid": torch.ones(1, 1, dtype=torch.bool),
             },
         )
     )
@@ -321,7 +323,7 @@ def test_teacher_runs_on_its_ppo_normalized_observations(
 
     obs = torch.randn(5, 3) * 3.0
     teacher_input = normalizer(obs, update=False) if normalizer is not None else obs
-    torch.testing.assert_close(algo.policy.teacher_act(obs), teacher(teacher_input), rtol=0.0, atol=0.0)
+    torch.testing.assert_close(algo.policy.teacher_act(obs).actions, teacher(teacher_input), rtol=0.0, atol=0.0)
 
 
 @pytest.mark.parametrize("algo_cls", [Distillation, DistillationPPO])
@@ -341,7 +343,7 @@ def test_teacher_normalizer_round_trips_through_full_checkpoint(
     obs = torch.randn(5, 3) * 3.0
     assert resumed.policy.loaded_teachers == (True,)
     torch.testing.assert_close(
-        resumed.policy.teacher_act(obs), teacher(normalizer(obs, update=False)), rtol=0.0, atol=0.0
+        resumed.policy.teacher_act(obs).actions, teacher(normalizer(obs, update=False)), rtol=0.0, atol=0.0
     )
 
 
@@ -777,3 +779,43 @@ def test_export_rejects_input_preparation_it_cannot_reproduce(
 
     with pytest.raises(RuntimeError, match="export_modules"):
         algo_cls.export(algo, onnx_file_path=str(tmp_path / "model_00007.onnx"))
+
+
+# ------------------------------------------------------ teacher validity mask
+
+
+def test_dagger_loss_ignores_rows_without_a_teacher_but_trains_on_valid_zero_actions() -> None:
+    algo = cast("Any", object.__new__(DistillationPPO))
+    algo.distill_loss_fn = torch.nn.functional.mse_loss
+    student_mean = torch.ones(2, 1, requires_grad=True)
+    # Both teacher actions are zero; only the first row actually has a teacher.
+    teacher_actions = torch.zeros(2, 1)
+    teacher_valid = torch.tensor([[True], [False]])
+
+    per_sample = algo._dagger_loss_per_sample(student_mean, teacher_actions, teacher_valid)
+    per_sample.sum().backward()
+
+    assert per_sample.tolist() == [1.0, 0.0]
+    assert student_mean.grad is not None
+    assert student_mean.grad[:, 0].tolist() == [2.0, 0.0]
+
+
+def test_dagger_target_is_unchanged_when_every_row_has_a_teacher() -> None:
+    student_mean = torch.randn(3, 2)
+    teacher_actions = torch.randn(3, 2)
+
+    target = DistillationBase._dagger_target(student_mean, teacher_actions, torch.ones(3, 1, dtype=torch.bool))
+
+    assert torch.equal(target, teacher_actions)
+
+
+def test_warmup_steps_envs_without_a_teacher_with_the_student_action() -> None:
+    actions = torch.tensor([[5.0], [6.0]])
+    teacher_actions = torch.tensor([[1.0], [0.0]])
+    teacher_valid = torch.tensor([True, False])
+
+    warm = DistillationBase._step_actions(actions, teacher_actions, teacher_valid, warmup=True)
+    cold = DistillationBase._step_actions(actions, teacher_actions, teacher_valid, warmup=False)
+
+    assert warm.tolist() == [[1.0], [6.0]]
+    assert torch.equal(cold, actions)

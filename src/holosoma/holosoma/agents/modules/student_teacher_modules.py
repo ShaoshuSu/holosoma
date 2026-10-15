@@ -19,7 +19,7 @@ Obs layout (matches the distillation rollout storage):
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 import torch
 from loguru import logger
@@ -31,6 +31,16 @@ MIN_ACTION_STD = 1.0e-6
 # PPO builds its EmpiricalNormalization with the default eps, which its state
 # dict does not store.
 PPO_OBS_NORMALIZER_EPS = 1.0e-2
+
+
+class TeacherActions(NamedTuple):
+    """DAgger labels from :meth:`StudentTeacher.teacher_act`."""
+
+    actions: torch.Tensor
+    """``[N, num_actions]`` teacher actions; zero in rows without a teacher."""
+
+    valid: torch.Tensor
+    """``[N]`` bool: whether a teacher produced the row. Losses must ignore invalid rows."""
 
 
 class TeacherObsNormalizer(nn.Module):
@@ -300,7 +310,7 @@ class StudentTeacher(nn.Module):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
     @torch.no_grad()
-    def teacher_act(self, teacher_obs: torch.Tensor, teacher_idx: torch.Tensor | None = None) -> torch.Tensor:
+    def teacher_act(self, teacher_obs: torch.Tensor, teacher_idx: torch.Tensor | None = None) -> TeacherActions:
         """Deterministic teacher forward. Used to generate DAgger labels.
 
         ``teacher_obs`` is the raw privileged observation; each teacher MLP sees
@@ -309,9 +319,9 @@ class StudentTeacher(nn.Module):
 
         - ``None`` (default): every env goes to ``self.teachers[0]``.
         - an integer tensor of shape ``[N]``: env ``n`` is routed to
-          ``self.teachers[teacher_idx[n]]``. Negative entries mean "no teacher
-          applies" and yield a zero action, which callers may use to mark
-          samples to exclude from the behaviour-cloning loss.
+          ``self.teachers[teacher_idx[n]]``. ``-1`` means "no teacher applies":
+          the row is marked invalid in the returned :class:`TeacherActions`, and
+          the algorithms exclude it from the behaviour-cloning loss.
 
         The index is an argument rather than a reserved observation column so
         that this module has no opinion on how an application derives it. See
@@ -326,7 +336,8 @@ class StudentTeacher(nn.Module):
         if teacher_idx is None:
             if self.num_teachers != 1:
                 raise ValueError(f"teacher_idx is required when {self.num_teachers} teachers are configured.")
-            return self.teachers[0](self.teacher_obs_normalizers[0](teacher_obs))
+            actions = self.teachers[0](self.teacher_obs_normalizers[0](teacher_obs))
+            return TeacherActions(actions, torch.ones(actions.shape[0], dtype=torch.bool, device=actions.device))
 
         if teacher_idx.shape != (teacher_obs.shape[0],):
             raise ValueError(f"teacher_idx must have shape [{teacher_obs.shape[0]}], got {tuple(teacher_idx.shape)}.")
@@ -352,7 +363,7 @@ class StudentTeacher(nn.Module):
             mask = idx == i
             if mask.any():
                 out[mask] = self.teachers[i](self.teacher_obs_normalizers[i](teacher_obs[mask]))
-        return out
+        return TeacherActions(out, idx >= 0)
 
     def reset(self, dones: torch.Tensor | None = None) -> None:
         pass

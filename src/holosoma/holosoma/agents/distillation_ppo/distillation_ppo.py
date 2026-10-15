@@ -53,6 +53,7 @@ class DistillationMinibatch(TypedDict):
     depth_obs: NotRequired[torch.Tensor]
     actions: torch.Tensor
     teacher_actions: torch.Tensor
+    teacher_valid: torch.Tensor
     rewards: torch.Tensor
     dones: torch.Tensor
     values: torch.Tensor
@@ -189,7 +190,8 @@ class DistillationPPO(DistillationBase):
                 # Sample student action and compute value / teacher label.
                 actions = self.policy.act(obs)
                 values = self.policy.evaluate(obs).detach()
-                teacher_actions = self.policy.teacher_act(obs["teacher_obs"]).detach()
+                teacher = self.policy.teacher_act(obs["teacher_obs"])
+                teacher_actions = teacher.actions.detach()
 
                 actions_log_prob = self.policy.get_actions_log_prob(actions).detach().unsqueeze(1)
                 action_mean = self.policy.action_mean.detach()
@@ -201,12 +203,12 @@ class DistillationPPO(DistillationBase):
                 # the frame index is still live. Done here rather than in the
                 # update loop because the rollout storage carries no frame index,
                 # and a one-step lag is irrelevant against the EMA's time constant.
-                self._update_ppo_gate_stats(action_mean, teacher_actions)
+                self._update_ppo_gate_stats(action_mean, teacher_actions, teacher.valid)
 
                 # During warmup the teacher drives the environment. Student
                 # distribution fields are still stored because the common
                 # rollout storage schema requires them; updates are DAgger-only.
-                step_actions = teacher_actions if self._warmup_active else actions
+                step_actions = self._step_actions(actions, teacher_actions, teacher.valid, self._warmup_active)
                 next_obs, rewards, dones, infos = self.env.step({"actions": step_actions})
                 next_obs = self._obs_to_device(next_obs)
                 rewards, dones = rewards.to(self.device), dones.to(self.device)
@@ -225,6 +227,7 @@ class DistillationPPO(DistillationBase):
                     **obs,
                     actions=actions,
                     teacher_actions=teacher_actions,
+                    teacher_valid=teacher.valid.view(-1, 1),
                     values=values,
                     actions_log_prob=actions_log_prob,
                     action_mean=action_mean,
@@ -283,8 +286,12 @@ class DistillationPPO(DistillationBase):
         """
         return torch.ones(self.env.num_envs, 1, device=self.device)
 
-    def _update_ppo_gate_stats(self, student_mean: torch.Tensor, teacher_actions: torch.Tensor) -> None:
+    def _update_ppo_gate_stats(
+        self, student_mean: torch.Tensor, teacher_actions: torch.Tensor, teacher_valid: torch.Tensor
+    ) -> None:
         """Hook for accumulating per-motion-frame statistics during rollout.
+
+        ``teacher_valid`` (``[N]`` bool) marks the envs a teacher produced a label for.
 
         No-op by default. Override alongside :meth:`_get_ppo_gate` to make the
         gate adapt to where imitation is actually falling short, rather than to a
@@ -292,20 +299,23 @@ class DistillationPPO(DistillationBase):
         """
         return
 
-    def _dagger_loss_per_sample(self, student_mean: torch.Tensor, teacher_actions: torch.Tensor) -> torch.Tensor:
-        """Behaviour-cloning loss per sample, shape ``(batch,)``.
+    def _dagger_loss_per_sample(
+        self, student_mean: torch.Tensor, teacher_actions: torch.Tensor, teacher_valid: torch.Tensor
+    ) -> torch.Tensor:
+        """Behaviour-cloning loss per sample, shape ``(batch,)``; zero where ``teacher_valid`` is false.
 
-        Override to drop samples — e.g. an application whose ``teacher_act``
-        marks "no teacher applies" with a zero action can mask those rows here.
         This is the extension point the combined loss uses; :meth:`_dagger_loss`
         is its batch mean and exists for logging and for callers that want a
         scalar.
         """
-        return self.distill_loss_fn(student_mean, teacher_actions, reduction="none").mean(dim=-1)
+        target = self._dagger_target(student_mean, teacher_actions, teacher_valid)
+        return self.distill_loss_fn(student_mean, target, reduction="none").mean(dim=-1)
 
-    def _dagger_loss(self, student_mean: torch.Tensor, teacher_actions: torch.Tensor) -> torch.Tensor:
+    def _dagger_loss(
+        self, student_mean: torch.Tensor, teacher_actions: torch.Tensor, teacher_valid: torch.Tensor
+    ) -> torch.Tensor:
         """Batch-mean behaviour-cloning loss. See :meth:`_dagger_loss_per_sample`."""
-        return self._dagger_loss_per_sample(student_mean, teacher_actions).mean()
+        return self._dagger_loss_per_sample(student_mean, teacher_actions, teacher_valid).mean()
 
     def _training_step(self) -> dict[str, float]:
         generator = self.storage.mini_batch_generator(self.config.num_mini_batches, self.config.num_learning_epochs)
@@ -344,9 +354,10 @@ class DistillationPPO(DistillationBase):
         actor_obs: torch.Tensor,
         depth_obs: torch.Tensor | None,
         teacher_actions: torch.Tensor,
+        teacher_valid: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         student_mean = self.policy.student(self.policy._student_input(actor_obs, depth_obs))
-        dagger_loss = self._dagger_loss(student_mean, teacher_actions)
+        dagger_loss = self._dagger_loss(student_mean, teacher_actions, teacher_valid)
         total_loss = self.config.dagger_loss_coef * dagger_loss
         self._optimizer_step(total_loss)
         zero = dagger_loss.new_zeros(())
@@ -375,8 +386,9 @@ class DistillationPPO(DistillationBase):
         critic_obs = mini_batch["critic_obs"]
         actions = mini_batch["actions"]
         teacher_actions = mini_batch["teacher_actions"]
+        teacher_valid = mini_batch["teacher_valid"]
         if self._warmup_active:
-            return self._dagger_only_update(actor_obs, depth_obs, teacher_actions)
+            return self._dagger_only_update(actor_obs, depth_obs, teacher_actions, teacher_valid)
 
         target_values = mini_batch["values"]
         returns = mini_batch["returns"]
@@ -431,7 +443,7 @@ class DistillationPPO(DistillationBase):
 
         entropy_mean = entropy.mean()
 
-        dagger_per_sample = self._dagger_loss_per_sample(student_mean, teacher_actions)
+        dagger_per_sample = self._dagger_loss_per_sample(student_mean, teacher_actions, teacher_valid)
 
         # Combined loss. Matches the reference DepthDistillationPPO formula:
         # value loss is **always active**

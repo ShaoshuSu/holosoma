@@ -220,6 +220,27 @@ class DistillationBase(BaseAlgo):
             obs["depth_obs"] = entry[self.config.module.depth_obs_term] if isinstance(entry, dict) else entry
         return obs
 
+    @staticmethod
+    def _step_actions(
+        actions: torch.Tensor, teacher_actions: torch.Tensor, teacher_valid: torch.Tensor, warmup: bool
+    ) -> torch.Tensor:
+        """Actions that step the env: during warmup, the teacher's where one applies."""
+        if not warmup:
+            return actions
+        return torch.where(teacher_valid.unsqueeze(-1), teacher_actions, actions)
+
+    @staticmethod
+    def _dagger_target(
+        student_mean: torch.Tensor, teacher_actions: torch.Tensor, teacher_valid: torch.Tensor
+    ) -> torch.Tensor:
+        """Behaviour-cloning target with rows lacking a teacher masked out.
+
+        Masked rows take the student's own detached output, so they add exactly zero loss and
+        zero gradient while the loss stays averaged over the full batch. With every row valid
+        the target is ``teacher_actions`` unchanged.
+        """
+        return torch.where(teacher_valid.view(-1, 1), teacher_actions, student_mean.detach())
+
     def _obs_to_device(self, obs_dict: dict[str, Any]) -> dict[str, Any]:
         for key, value in obs_dict.items():
             if isinstance(value, torch.Tensor):

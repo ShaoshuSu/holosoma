@@ -8,6 +8,7 @@ distillation pipeline:
 - ``depth_obs``: raw depth image (H, W) consumed by the student's CNN backbone,
   registered only for a student with a depth backbone.
 - ``teacher_actions``: DAgger targets produced by ``policy.teacher_act``.
+- ``teacher_valid``: whether a teacher produced each target; losses ignore the rest.
 
 All other fields (``actor_obs``, ``critic_obs``, ``actions``, ``rewards``,
 ``dones``, ``values``, ``returns``, ``advantages``, ``actions_log_prob``,
@@ -77,6 +78,7 @@ class RolloutStorageDistillation(RolloutStorage):
 
         self.register("actions", shape=(num_actions,), dtype=torch.float)
         self.register("teacher_actions", shape=(num_actions,), dtype=torch.float)
+        self.register("teacher_valid", shape=(1,), dtype=torch.bool)
 
         # 1-D scalar fields stored as (1,) to match holosoma PPO's conventions.
         self.register("rewards", shape=(1,), dtype=torch.float)

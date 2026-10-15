@@ -47,19 +47,26 @@ def test_partial_non_strict_load_does_not_mark_teacher_ready() -> None:
         module.require_loaded_teachers()
 
 
-def test_multi_teacher_routing_and_no_teacher_sentinel() -> None:
+def test_multi_teacher_routing_marks_rows_without_a_teacher_invalid() -> None:
     module = _module(num_teachers=2)
     _load_constant_teachers(module)
 
-    actions = module.teacher_act(
+    actions, valid = module.teacher_act(
         torch.zeros(3, 3),
         torch.tensor([0, 1, -1]),
     )
 
-    torch.testing.assert_close(
-        actions,
-        torch.tensor([[1.0, 1.0], [2.0, 2.0], [0.0, 0.0]]),
-    )
+    torch.testing.assert_close(actions[:2], torch.tensor([[1.0, 1.0], [2.0, 2.0]]))
+    assert valid.tolist() == [True, True, False]
+
+
+def test_a_single_teacher_labels_every_row() -> None:
+    module = _module()
+    _load_constant_teachers(module)
+
+    _, valid = module.teacher_act(torch.zeros(3, 3))
+
+    assert valid.tolist() == [True, True, True]
 
 
 def test_multiple_teachers_require_explicit_routing() -> None:
@@ -171,7 +178,7 @@ def test_each_teacher_uses_its_own_obs_normalizer() -> None:
             {"model_state_dict": state, "actor_obs_normalizer_state_dict": normalizer}, teacher_index=index
         )
 
-    actions = module.teacher_act(torch.full((2, 3), 3.0), torch.tensor([0, 1]))
+    actions = module.teacher_act(torch.full((2, 3), 3.0), torch.tensor([0, 1])).actions
 
     # Teacher 0 sees (3 - 1) / (0.99 + 0.01) = 2; teacher 1 sees the raw 3.
     torch.testing.assert_close(actions[:, 0], torch.tensor([2.0, 3.0]))

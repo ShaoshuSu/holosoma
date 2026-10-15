@@ -58,6 +58,7 @@ class RolloutStorageDagger(RolloutStorage):
             self.register("depth_obs", shape=self.depth_shape, dtype=torch.float)
         self.register("actions", shape=(num_actions,), dtype=torch.float)
         self.register("teacher_actions", shape=(num_actions,), dtype=torch.float)
+        self.register("teacher_valid", shape=(1,), dtype=torch.bool)
         self.register("dones", shape=(1,), dtype=torch.bool)
 
     def add(self, **data: torch.Tensor) -> None:
