@@ -137,8 +137,7 @@ class Distillation(DistillationBase):
             # the reference implementation uses for behavior cloning, not a
             # sampled action. Rows without a teacher are masked out.
             student_mean = self.policy.student(self.policy._student_input(actor_obs, depth_obs))
-            target = self._dagger_target(student_mean, teacher_actions, mini_batch["teacher_valid"])
-            loss = self.distill_loss_fn(student_mean, target)
+            loss = self._dagger_loss(student_mean, teacher_actions, mini_batch["teacher_valid"])
 
             self.optimizer.zero_grad()
             loss.backward()

@@ -241,6 +241,15 @@ class DistillationBase(BaseAlgo):
         """
         return torch.where(teacher_valid.view(-1, 1), teacher_actions, student_mean.detach())
 
+    def _dagger_loss(
+        self, student_mean: torch.Tensor, teacher_actions: torch.Tensor, teacher_valid: torch.Tensor
+    ) -> torch.Tensor:
+        """Batch-mean behaviour-cloning loss; rows where ``teacher_valid`` is false add zero.
+
+        Override to change how labels without a teacher are handled.
+        """
+        return self.distill_loss_fn(student_mean, self._dagger_target(student_mean, teacher_actions, teacher_valid))
+
     def _obs_to_device(self, obs_dict: dict[str, Any]) -> dict[str, Any]:
         for key, value in obs_dict.items():
             if isinstance(value, torch.Tensor):

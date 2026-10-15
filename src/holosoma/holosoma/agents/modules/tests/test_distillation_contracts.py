@@ -819,3 +819,14 @@ def test_warmup_steps_envs_without_a_teacher_with_the_student_action() -> None:
 
     assert warm.tolist() == [[1.0], [6.0]]
     assert torch.equal(cold, actions)
+
+
+def test_pure_dagger_loss_masks_rows_without_a_teacher_over_the_full_batch() -> None:
+    algo = cast("Any", object.__new__(Distillation))
+    algo.distill_loss_fn = torch.nn.functional.mse_loss
+    student_mean = torch.tensor([[1.0], [3.0]])
+
+    loss = algo._dagger_loss(student_mean, torch.zeros(2, 1), torch.tensor([[True], [False]]))
+
+    # Only the first row has a teacher: (1 - 0)^2 + 0, averaged over both rows.
+    assert loss.item() == 0.5
