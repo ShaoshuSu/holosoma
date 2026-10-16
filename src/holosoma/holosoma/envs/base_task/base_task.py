@@ -527,7 +527,7 @@ class BaseTask:
             timeout_ids = self.time_out_buf.nonzero(as_tuple=False).flatten()
         final_obs_dict = {}
         if timeout_ids.numel() > 0:
-            final_obs_dict = self._compute_final_observations(timeout_ids)
+            final_obs_dict = self.observation_manager.step_terminal(timeout_ids)
 
         self.reset_envs_idx(env_ids)
 
@@ -538,7 +538,7 @@ class BaseTask:
         if not self._update_tasks_before_termination:
             self._update_tasks_callback()
 
-        self._compute_observations()
+        self.obs_buf_dict = self.observation_manager.step()
 
         if final_obs_dict:
             self._store_final_observations(
@@ -592,12 +592,6 @@ class BaseTask:
         self.rew_buf[:] = self.reward_manager.compute(self.dt)
         self.episode_sums = getattr(self.reward_manager, "episode_sums", {})
         self.episode_sums_raw = getattr(self.reward_manager, "episode_sums_raw", {})
-
-    def _compute_observations(self) -> None:
-        self.obs_buf_dict = self.observation_manager.step()
-
-    def _compute_final_observations(self, env_ids: torch.Tensor) -> dict[str, Any]:
-        return self.observation_manager.step_terminal(env_ids)
 
     def _update_tasks_callback(self) -> None:
         self.command_manager.step()
