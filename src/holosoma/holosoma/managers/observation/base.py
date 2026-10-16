@@ -44,7 +44,8 @@ class ObservationTermBase(ABC):
     def __call__(self, env: Any, env_ids: torch.Tensor | None = None, **kwargs: Any) -> torch.Tensor:
         """Compute the observation of ``env_ids`` and advance only their internal state.
 
-        Envs not in ``env_ids`` must keep their state untouched; an empty ``env_ids`` is a pure read.
+        Envs not in ``env_ids`` must keep their state untouched. An empty ``env_ids`` is how the
+        manager measures the output shape: return ``[0, *obs_shape]`` and change nothing.
 
         Args:
             env: Environment instance
@@ -52,5 +53,5 @@ class ObservationTermBase(ABC):
             **kwargs: Additional parameters from config
 
         Returns:
-            Observation tensor of shape [num_envs, obs_dim], or [len(env_ids), obs_dim]
+            Observation tensor of shape [num_envs, *obs_shape], or [len(env_ids), *obs_shape]
         """
