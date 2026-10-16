@@ -241,7 +241,7 @@ def run_demo(backend: str, num_envs: int, headless: bool = True) -> int:
         # ---- 2. OBJECT OBSERVATIONS ------------------------------------------------------
         _section("2. OBJECT OBSERVATIONS — base-frame state via the env's real ObservationManager")
         n_free = len(free_names)
-        dims = env.observation_manager.get_obs_dims()  # measured by calling each term once
+        dims = env.observation_manager.get_obs_dims()  # measured by reading each term for zero envs
         print(f"observation groups: {sorted(dims)}")
         print(f"measured 'object_obs' dim for {n_free} free bodies: {dims['object_obs']}")
         print(f"  expected k*N = (3 pos + 4 quat + 3 linvel + 3 angvel) * {n_free} = {13 * n_free}")

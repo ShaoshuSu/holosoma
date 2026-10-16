@@ -104,7 +104,10 @@ class ObservationManager:
             Mapping from group names to observation tensors or dictionaries of tensors.
         """
         if not self._frame_ready:
-            raise RuntimeError("ObservationManager.step() already ran for this frame; call new_frame() first.")
+            raise RuntimeError(
+                "ObservationManager.step() called without an open frame: it runs once per new_frame(), "
+                "so either it already ran this frame or new_frame() was never called."
+            )
         if self._terminal_ran and bool(self._terminal_rows.any()):
             raise RuntimeError(
                 "ObservationManager.step() called before resetting the envs advanced by step_terminal()."

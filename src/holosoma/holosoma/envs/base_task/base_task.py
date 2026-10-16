@@ -522,9 +522,7 @@ class BaseTask:
 
         env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
         # Only timed-out envs are bootstrapped from their terminal observation (time-outs are a subset of resets).
-        timeout_ids = env_ids[:0]
-        if env_ids.numel() > 0:
-            timeout_ids = self.time_out_buf.nonzero(as_tuple=False).flatten()
+        timeout_ids = self.time_out_buf.nonzero(as_tuple=False).flatten() if env_ids.numel() > 0 else env_ids
         final_obs_dict = {}
         if timeout_ids.numel() > 0:
             final_obs_dict = self.observation_manager.step_terminal(timeout_ids)
@@ -541,12 +539,10 @@ class BaseTask:
         self.obs_buf_dict = self.observation_manager.step()
 
         if final_obs_dict:
-            self._store_final_observations(
-                self._ensure_long_tensor(timeout_ids), self.observation_manager.clip_observations(final_obs_dict)
-            )
+            self._store_final_observations(timeout_ids, self.observation_manager.clip_observations(final_obs_dict))
 
         self._post_compute_observations_callback()
-        self.obs_buf_dict = self.observation_manager.clip_observations(self.obs_buf_dict)
+        self.obs_buf_dict.update(self.observation_manager.clip_observations(self.obs_buf_dict))
 
         self.extras["to_log"] = self.log_dict
         if self.viewer:

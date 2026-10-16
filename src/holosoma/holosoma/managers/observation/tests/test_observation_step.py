@@ -75,7 +75,7 @@ def test_second_step_in_a_frame_raises() -> None:
     manager = _manager(_env())
     _step(manager)
 
-    with pytest.raises(RuntimeError, match="already ran for this frame"):
+    with pytest.raises(RuntimeError, match="without an open frame"):
         manager.step()
 
 
