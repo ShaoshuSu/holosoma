@@ -170,6 +170,20 @@ def test_terminal_obs_survive_reset_of_term_state() -> None:
     assert terminal.tolist() == [[2.0]]
 
 
+class OldContractTerm(CounterTerm):
+    """A term written before env_ids: swallows it and computes every env."""
+
+    def __call__(self, env: Any, **kwargs: Any) -> torch.Tensor:  # type: ignore[override]
+        return super().__call__(env)
+
+
+def test_old_contract_term_is_rejected_at_sizing() -> None:
+    manager = _manager(_env(), terms={"counter": ObsTermCfg(func=f"{_HERE}:OldContractTerm")})
+
+    with pytest.raises(ValueError, match="'counter' in group 'policy' returned 2 rows for 0 env_ids"):
+        manager.get_obs_dims()
+
+
 def test_get_obs_dims_does_not_advance_stateful_terms() -> None:
     manager = _manager(_env())
 

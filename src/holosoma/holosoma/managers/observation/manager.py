@@ -251,6 +251,11 @@ class ObservationManager:
             # Stateful term
             instance = self._term_instances[group_name][term_name]
             obs = instance(self.env, env_ids=env_ids, **term_cfg.params)
+            if env_ids is not None and obs.shape[0] != len(env_ids):
+                raise ValueError(
+                    f"Stateful observation term '{term_name}' in group '{group_name}' returned {obs.shape[0]} rows "
+                    f"for {len(env_ids)} env_ids; ObservationTermBase.__call__ must compute and advance only env_ids."
+                )
             # Clone even for a row subset: the term may return a view of state that reset() then overwrites.
             return obs.clone()
 
