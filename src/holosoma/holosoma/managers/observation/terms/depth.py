@@ -118,10 +118,12 @@ class DelayedDepthImageObsTerm(ObservationTermBase):
         return self._select(self.buffer, self.latency)
 
     def peek(self, env: Any, **kwargs: Any) -> torch.Tensor:
-        """The delayed frame a step read would serve now, without augmentation, RNG, or state changes.
+        """The delayed frame a step read would serve now, without side effects.
 
-        The current frame is preprocessed but not augmented, and each env keeps the latency of the
-        latest step read.
+        It leaves out the randomness a step read samples (see ``ObservationTermBase.peek``): the
+        current frame is preprocessed but not augmented, and each env keeps the latency of the
+        latest step read. With a latency of at least one frame, the served frame comes from the
+        buffer, already augmented, and matches a step read exactly.
         """
         frame = normalize_depth(self._metric_frame(env), self.processing)
         return self._select(self._history_with(frame), self.latency)
