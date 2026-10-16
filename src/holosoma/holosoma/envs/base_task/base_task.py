@@ -541,10 +541,12 @@ class BaseTask:
         self._compute_observations()
 
         if final_obs_dict:
-            self._store_final_observations(self._ensure_long_tensor(timeout_ids), final_obs_dict)
+            self._store_final_observations(
+                self._ensure_long_tensor(timeout_ids), self._clip_observations(final_obs_dict)
+            )
 
         self._post_compute_observations_callback()
-        self._clip_observations()
+        self.obs_buf_dict = self._clip_observations(self.obs_buf_dict)
 
         self.extras["to_log"] = self.log_dict
         if self.viewer:
@@ -583,9 +585,8 @@ class BaseTask:
         for obs_key, values in final_obs_dict.items():
             _store_value(final_store, obs_key, values, self.obs_buf_dict[obs_key])
 
-    def _clip_observations(self) -> None:
-        for obs_key, obs_val in self.obs_buf_dict.items():
-            self.obs_buf_dict[obs_key] = self.observation_manager.clip_obs_value(obs_val)
+    def _clip_observations(self, obs_dict: dict[str, Any]) -> dict[str, Any]:
+        return {obs_key: self.observation_manager.clip_obs_value(obs_val) for obs_key, obs_val in obs_dict.items()}
 
     def _compute_reward(self) -> None:
         self.rew_buf[:] = self.reward_manager.compute(self.dt)
@@ -596,9 +597,7 @@ class BaseTask:
         self.obs_buf_dict = self.observation_manager.step()
 
     def _compute_final_observations(self, env_ids: torch.Tensor) -> dict[str, Any]:
-        """Terminal observations of ``env_ids``, clipped like the step observations."""
-        final_obs = self.observation_manager.step_terminal(env_ids)
-        return {obs_key: self.observation_manager.clip_obs_value(obs_val) for obs_key, obs_val in final_obs.items()}
+        return self.observation_manager.step_terminal(env_ids)
 
     def _update_tasks_callback(self) -> None:
         self.command_manager.step()

@@ -1,9 +1,8 @@
 """Tests for dict/dtype-aware observation handling in BaseTask.
 
 A ``concatenate=False`` observation group computes to a dict of per-term tensors. These tests pin
-that ``_clip_observations``, ``_compute_final_observations`` and ``_store_final_observations`` handle
-a dict group value (and a uint8 image term) without flattening or clipping it, by calling the unbound
-methods on a stub.
+that ``_clip_observations`` and ``_store_final_observations`` handle a dict group value (and a
+uint8 image term) without flattening or clipping it, by calling the unbound methods on a stub.
 """
 
 from __future__ import annotations
@@ -43,17 +42,17 @@ def test_clip_observations_handles_dict_group_and_uint8() -> None:
     }
     stub = _make_stub(obs)
 
-    BaseTask._clip_observations(stub)
+    out = BaseTask._clip_observations(stub, obs)
 
     # Flat float group clipped to +/-100.
-    assert torch.equal(stub.obs_buf_dict["actor_obs"], torch.tensor([[100.0, -100.0, 1.0]]))
+    assert torch.equal(out["actor_obs"], torch.tensor([[100.0, -100.0, 1.0]]))
     # Dict group preserved as a dict.
-    assert isinstance(stub.obs_buf_dict["image_group"], dict)
+    assert isinstance(out["image_group"], dict)
     # uint8 image untouched (not clipped to +/-100).
-    assert torch.equal(stub.obs_buf_dict["image_group"]["front_rgb"], image)
-    assert stub.obs_buf_dict["image_group"]["front_rgb"].dtype == torch.uint8
+    assert torch.equal(out["image_group"]["front_rgb"], image)
+    assert out["image_group"]["front_rgb"].dtype == torch.uint8
     # Float term inside the dict group within range, unchanged.
-    assert torch.equal(stub.obs_buf_dict["image_group"]["proprio"], proprio)
+    assert torch.equal(out["image_group"]["proprio"], proprio)
 
 
 def test_clip_observations_preserves_depth_inf_sentinel() -> None:
@@ -63,9 +62,7 @@ def test_clip_observations_preserves_depth_inf_sentinel() -> None:
     obs = {"image_group": {"front_depth": depth.clone()}}
     stub = _make_stub(obs, clip_limit=100.0)
 
-    BaseTask._clip_observations(stub)
-
-    out = stub.obs_buf_dict["image_group"]["front_depth"]
+    out = BaseTask._clip_observations(stub, obs)["image_group"]["front_depth"]
     assert torch.isinf(out[0, 0, 0, 0])  # sentinel survives (not clamped to 100)
     assert float(out[0, 1, 1, 0]) == 250.0  # far depth not clamped
 
@@ -104,18 +101,3 @@ def test_store_final_observations_empty_is_noop() -> None:
     stub = _make_stub({"actor_obs": torch.zeros(2, 2)})
     BaseTask._store_final_observations(stub, torch.tensor([0]), {})
     assert "final_observations" not in stub.extras
-
-
-def test_final_observations_are_clipped_like_step_observations() -> None:
-    """Terminal observations use the step observations' clip limit; image terms stay unclipped."""
-    depth = torch.full((1, 2, 2, 1), float("inf"))
-    stub = _make_stub({}, clip_limit=1.0)
-    stub.observation_manager.step_terminal = lambda env_ids: {  # type: ignore[method-assign]
-        "critic_obs": torch.tensor([[-2.0, 0.5, 3.0]]),
-        "image_group": {"front_depth": depth},
-    }
-
-    final = BaseTask._compute_final_observations(stub, torch.tensor([0]))
-
-    assert torch.equal(final["critic_obs"], torch.tensor([[-1.0, 0.5, 1.0]]))
-    assert torch.isinf(final["image_group"]["front_depth"]).all()
