@@ -24,19 +24,6 @@ from holosoma.utils.safe_torch_import import torch
 from holosoma.utils.torch_utils import to_torch
 
 
-def _clip_obs_value(value: Any, clip_limit: float) -> Any:
-    """Clip one observation group value to ``[-clip_limit, clip_limit]``."""
-    # A concatenate=False group is a dict of per-term tensors; recurse one level.
-    if isinstance(value, dict):
-        return {k: _clip_obs_value(v, clip_limit) for k, v in value.items()}
-    # Only clip flat (2-D [N, feature]) float observations. Image/depth terms
-    # ([N, H, W, C]) are not bounded observations and clipping would corrupt them
-    # (e.g. collapse the depth +inf no-hit sentinel to clip_limit).
-    if isinstance(value, torch.Tensor) and value.is_floating_point() and value.ndim == 2:
-        return torch.clip(value, -clip_limit, clip_limit)
-    return value
-
-
 # Base class for RL tasks built around the manager-based architecture.
 class BaseTask:
     def __init__(
@@ -597,9 +584,8 @@ class BaseTask:
             _store_value(final_store, obs_key, values, self.obs_buf_dict[obs_key])
 
     def _clip_observations(self) -> None:
-        clip_limit = self.observation_manager.cfg.clip_observations
         for obs_key, obs_val in self.obs_buf_dict.items():
-            self.obs_buf_dict[obs_key] = _clip_obs_value(obs_val, clip_limit)
+            self.obs_buf_dict[obs_key] = self.observation_manager.clip_obs_value(obs_val)
 
     def _compute_reward(self) -> None:
         self.rew_buf[:] = self.reward_manager.compute(self.dt)
@@ -611,9 +597,8 @@ class BaseTask:
 
     def _compute_final_observations(self, env_ids: torch.Tensor) -> dict[str, Any]:
         """Terminal observations of ``env_ids``, clipped like the step observations."""
-        clip_limit = self.observation_manager.cfg.clip_observations
         final_obs = self.observation_manager.step_terminal(env_ids)
-        return {obs_key: _clip_obs_value(obs_val, clip_limit) for obs_key, obs_val in final_obs.items()}
+        return {obs_key: self.observation_manager.clip_obs_value(obs_val) for obs_key, obs_val in final_obs.items()}
 
     def _update_tasks_callback(self) -> None:
         self.command_manager.step()

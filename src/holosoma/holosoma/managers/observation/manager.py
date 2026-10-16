@@ -136,6 +136,30 @@ class ObservationManager:
         self._terminal_rows[env_ids] = True
         return {group_name: self._compute_group(group_name, env_ids) for group_name in self.cfg.groups}
 
+    def clip_obs_value(self, value: Any) -> Any:
+        """Clip one observation group value to ``[-clip_observations, clip_observations]``.
+
+        Parameters
+        ----------
+        value : Any
+            A group's tensor, or its dict of per-term tensors for a ``concatenate=False`` group.
+
+        Returns
+        -------
+        Any
+            ``value`` with its 2-D float tensors clipped; other values are returned unchanged.
+        """
+        # A concatenate=False group is a dict of per-term tensors; recurse one level.
+        if isinstance(value, dict):
+            return {k: self.clip_obs_value(v) for k, v in value.items()}
+        # Only clip flat (2-D [N, feature]) float observations. Image/depth terms
+        # ([N, H, W, C]) are not bounded observations and clipping would corrupt them
+        # (e.g. collapse the depth +inf no-hit sentinel to clip_limit).
+        if isinstance(value, torch.Tensor) and value.is_floating_point() and value.ndim == 2:
+            clip_limit = self.cfg.clip_observations
+            return torch.clip(value, -clip_limit, clip_limit)
+        return value
+
     def _compute_group(self, group_name: str, env_ids: torch.Tensor | None) -> torch.Tensor | dict[str, torch.Tensor]:
         """Compute one group for all envs (``env_ids=None``, advancing history) or for ``env_ids``.
 

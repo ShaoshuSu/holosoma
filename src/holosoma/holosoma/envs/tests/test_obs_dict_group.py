@@ -13,18 +13,22 @@ from typing import cast
 
 import pytest
 
+from holosoma.config_types.observation import ObservationManagerCfg
 from holosoma.envs.base_task.base_task import BaseTask
+from holosoma.managers.observation.manager import ObservationManager
 from holosoma.utils.safe_torch_import import torch
 
 pytestmark = pytest.mark.no_sim
 
 
 def _make_stub(obs_buf_dict: dict[str, torch.Tensor | dict[str, torch.Tensor]], clip_limit: float = 100.0) -> BaseTask:
-    """Minimal object carrying just what the two methods touch."""
+    """Minimal object carrying just what the methods under test touch."""
     stub = types.SimpleNamespace()
     stub.obs_buf_dict = obs_buf_dict
     stub.extras = {}
-    stub.observation_manager = types.SimpleNamespace(cfg=types.SimpleNamespace(clip_observations=clip_limit))
+    stub.observation_manager = ObservationManager(
+        ObservationManagerCfg(clip_observations=clip_limit), types.SimpleNamespace(num_envs=1), device="cpu"
+    )
     return cast("BaseTask", stub)
 
 
