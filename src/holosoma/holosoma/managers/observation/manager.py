@@ -86,8 +86,8 @@ class ObservationManager:
     def new_frame(self) -> None:
         """Mark that the simulation advanced, allowing one :meth:`step_terminal` and one :meth:`step`.
 
-        Registered on the simulator's ``FRAME_END`` hook by the env; call it directly when driving the
-        manager without one.
+        The env calls it once per control step, after physics; call it yourself when driving the
+        manager without an env.
         """
         self._frame_ready = True
         self._terminal_ran = False

@@ -178,7 +178,6 @@ class BaseTask:
 
         # Initialize remaining managers
         self.observation_manager = ObservationManager(observation_config, self, self.device)
-        self.simulator.hooks.add(Phase.FRAME_END, self.observation_manager.new_frame, name="observations.frame")
         self.action_manager = ActionManager(action_config, self, self.device)
         self.reward_manager = RewardManager(reward_config, self, self.device)
         self.termination_manager = TerminationManager(termination_config, self, self.device)
@@ -503,6 +502,7 @@ class BaseTask:
         # Cameras render and egress consumers publish here, as FRAME_END plugins (the cameras'
         # render_sensors is registered before any consumer, so buffers are fresh on read).
         self.simulator.hooks.emit(Phase.FRAME_END)
+        self.observation_manager.new_frame()
         self.episode_length_buf += 1
         self._update_counters_each_step()
 
