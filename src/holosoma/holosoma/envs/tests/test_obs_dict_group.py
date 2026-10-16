@@ -74,22 +74,23 @@ def test_store_final_observations_handles_dict_group() -> None:
     }
     stub = _make_stub(cur)
 
-    final = {
-        "actor_obs": torch.arange(num_envs * 2, dtype=torch.float32).reshape(num_envs, 2),
-        "image_group": {"front_rgb": torch.full((num_envs, 2, 2, 3), 7, dtype=torch.uint8)},
-    }
     env_ids = torch.tensor([0, 2])  # store envs 0 and 2 only
+    # Final observations hold one row per entry of env_ids.
+    final = {
+        "actor_obs": torch.arange(4, dtype=torch.float32).reshape(2, 2),
+        "image_group": {"front_rgb": torch.full((2, 2, 2, 3), 7, dtype=torch.uint8)},
+    }
 
     BaseTask._store_final_observations(stub, env_ids, final)
 
     store = stub.extras["final_observations"]
     # Flat group: env 0 and 2 copied from final, env 1 left zero.
-    assert torch.equal(store["actor_obs"][env_ids], final["actor_obs"][env_ids])
+    assert torch.equal(store["actor_obs"][env_ids], final["actor_obs"])
     assert torch.equal(store["actor_obs"][1], torch.zeros(2))
     # Dict group recursed: image copied for the selected envs, dtype preserved.
     img_store = store["image_group"]["front_rgb"]
     assert img_store.dtype == torch.uint8
-    assert torch.equal(img_store[env_ids], final["image_group"]["front_rgb"][env_ids])
+    assert torch.equal(img_store[env_ids], final["image_group"]["front_rgb"])
     assert int(img_store[1].sum()) == 0  # env 1 untouched
 
 

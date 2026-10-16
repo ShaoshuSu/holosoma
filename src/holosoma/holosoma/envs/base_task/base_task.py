@@ -178,6 +178,7 @@ class BaseTask:
 
         # Initialize remaining managers
         self.observation_manager = ObservationManager(observation_config, self, self.device)
+        self.simulator.hooks.add(Phase.FRAME_END, self.observation_manager.new_frame, name="observations.frame")
         self.action_manager = ActionManager(action_config, self, self.device)
         self.reward_manager = RewardManager(reward_config, self, self.device)
         self.termination_manager = TerminationManager(termination_config, self, self.device)
@@ -520,9 +521,13 @@ class BaseTask:
         self._update_log_dict()
 
         env_ids = self.reset_buf.nonzero(as_tuple=False).flatten()
-        final_obs_dict = {}
+        # Only timed-out envs are bootstrapped from their terminal observation (time-outs are a subset of resets).
+        timeout_ids = env_ids[:0]
         if env_ids.numel() > 0:
-            final_obs_dict = self._compute_final_observations()
+            timeout_ids = self.time_out_buf.nonzero(as_tuple=False).flatten()
+        final_obs_dict = {}
+        if timeout_ids.numel() > 0:
+            final_obs_dict = self._compute_final_observations(timeout_ids)
 
         self.reset_envs_idx(env_ids)
 
@@ -535,9 +540,8 @@ class BaseTask:
 
         self._compute_observations()
 
-        if env_ids.numel() > 0 and final_obs_dict:
-            env_ids_long = self._ensure_long_tensor(env_ids)
-            self._store_final_observations(env_ids_long, final_obs_dict)
+        if final_obs_dict:
+            self._store_final_observations(self._ensure_long_tensor(timeout_ids), final_obs_dict)
 
         self._post_compute_observations_callback()
         self._clip_observations()
@@ -574,7 +578,7 @@ class BaseTask:
                 return
             if key not in store_parent:
                 store_parent[key] = torch.zeros_like(template)
-            store_parent[key][env_ids] = value[env_ids]
+            store_parent[key][env_ids] = value
 
         for obs_key, values in final_obs_dict.items():
             _store_value(final_store, obs_key, values, self.obs_buf_dict[obs_key])
@@ -602,10 +606,10 @@ class BaseTask:
         self.episode_sums_raw = getattr(self.reward_manager, "episode_sums_raw", {})
 
     def _compute_observations(self) -> None:
-        self.obs_buf_dict = self.observation_manager.compute()
+        self.obs_buf_dict = self.observation_manager.step()
 
-    def _compute_final_observations(self) -> dict[str, Any]:
-        return self.observation_manager.compute(modify_history=False)
+    def _compute_final_observations(self, env_ids: torch.Tensor) -> dict[str, Any]:
+        return self.observation_manager.compute_terminal(env_ids)
 
     def _update_tasks_callback(self) -> None:
         self.command_manager.step()

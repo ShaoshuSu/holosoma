@@ -18,7 +18,7 @@ What it demonstrates, in order:
   2. OBJECT OBSERVATIONS — the task-independent base-frame observation terms
      (``object_pos_b`` / ``object_quat_b`` / ``object_lin_vel_b`` / ``object_ang_vel_b``) are
      wired into the env's REAL ``ObservationManager`` as an ``object_obs`` group and computed via
-     ``env.observation_manager.compute()``. The group's dimension (k * N for N free bodies) is
+     ``env.observation_manager.step()``. The group's dimension (k * N for N free bodies) is
      MEASURED by the manager, not declared — so the same term config works for any object count.
 
   3. EPISODE RESET — ``env.reset_envs_idx(env_ids)`` runs the real per-env reset chain;
@@ -248,7 +248,8 @@ def run_demo(backend: str, num_envs: int, headless: bool = True) -> int:
         if dims["object_obs"] != 13 * n_free:
             print(f"FAIL: object obs dim {dims['object_obs']} != {13 * n_free}")
             return 1
-        obs = env.observation_manager.compute()["object_obs"]
+        env.observation_manager.new_frame()  # no env.step() here, so mark the frame by hand
+        obs = env.observation_manager.step()["object_obs"]
         print(f"  computed 'object_obs' tensor shape: {tuple(obs.shape)}  (finite={bool(torch.isfinite(obs).all())})")
         if obs.shape != (env.num_envs, 13 * n_free) or not torch.isfinite(obs).all():
             print("FAIL: object observation tensor malformed")
