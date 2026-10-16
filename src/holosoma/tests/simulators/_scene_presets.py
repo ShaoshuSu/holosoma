@@ -111,7 +111,7 @@ physics_box = SceneConfig(
                 mass=3.0,
                 isaacgym=IsaacGymPhysicsConfig(friction=0.4),
                 isaacsim=IsaacSimPhysicsConfig(static_friction=0.4, dynamic_friction=0.4),
-                mujoco=MujocoPhysicsConfig(friction=(0.4, 0.01, 0.001)),
+                mujoco=MujocoPhysicsConfig(friction=[0.4, 0.01, 0.001]),
             ),
         )
     }
@@ -133,7 +133,7 @@ def _friction_box(y: float, friction: float) -> RigidObjectConfig:
         physics=PhysicsConfig(
             isaacgym=IsaacGymPhysicsConfig(friction=friction),
             isaacsim=IsaacSimPhysicsConfig(static_friction=friction, dynamic_friction=friction),
-            mujoco=MujocoPhysicsConfig(friction=(friction, 0.005, 0.001)),
+            mujoco=MujocoPhysicsConfig(friction=[friction, 0.005, 0.001]),
         ),
     )
 
@@ -294,7 +294,7 @@ collide_into_fixed = SceneConfig(
             physics=PhysicsConfig(
                 isaacgym=IsaacGymPhysicsConfig(friction=0.05),
                 isaacsim=IsaacSimPhysicsConfig(static_friction=0.05, dynamic_friction=0.05),
-                mujoco=MujocoPhysicsConfig(friction=(0.05, 0.005, 0.001)),
+                mujoco=MujocoPhysicsConfig(friction=[0.05, 0.005, 0.001]),
             ),
         ),
         "wall": RigidObjectConfig(urdf_file=_SMALL_BOX, usd_file=_SMALL_BOX_USD, position=[1.7, 0.0, 0.05], fixed=True),
@@ -314,7 +314,7 @@ momentum_transfer = SceneConfig(
             physics=PhysicsConfig(
                 isaacgym=IsaacGymPhysicsConfig(friction=0.05),
                 isaacsim=IsaacSimPhysicsConfig(static_friction=0.05, dynamic_friction=0.05),
-                mujoco=MujocoPhysicsConfig(friction=(0.05, 0.005, 0.001)),
+                mujoco=MujocoPhysicsConfig(friction=[0.05, 0.005, 0.001]),
             ),
         ),
         "target": RigidObjectConfig(
@@ -324,7 +324,7 @@ momentum_transfer = SceneConfig(
             physics=PhysicsConfig(
                 isaacgym=IsaacGymPhysicsConfig(friction=0.05),
                 isaacsim=IsaacSimPhysicsConfig(static_friction=0.05, dynamic_friction=0.05),
-                mujoco=MujocoPhysicsConfig(friction=(0.05, 0.005, 0.001)),
+                mujoco=MujocoPhysicsConfig(friction=[0.05, 0.005, 0.001]),
             ),
         ),
     }
@@ -480,7 +480,7 @@ restitution_bounce = SceneConfig(
                 isaacsim=IsaacSimPhysicsConfig(
                     static_friction=0.5, dynamic_friction=0.5, restitution=0.9, restitution_combine_mode="max"
                 ),
-                mujoco=MujocoPhysicsConfig(friction=(0.5, 0.005, 0.001), solref=(-3000.0, -3.0)),
+                mujoco=MujocoPhysicsConfig(friction=[0.5, 0.005, 0.001], solref=[-3000.0, -3.0]),
             ),
         ),
     }
@@ -670,7 +670,7 @@ restitution_twin = SceneConfig(
                 isaacsim=IsaacSimPhysicsConfig(
                     static_friction=0.5, dynamic_friction=0.5, restitution=0.9, restitution_combine_mode="max"
                 ),
-                mujoco=MujocoPhysicsConfig(friction=(0.5, 0.005, 0.001), solref=(-3000.0, -3.0)),
+                mujoco=MujocoPhysicsConfig(friction=[0.5, 0.005, 0.001], solref=[-3000.0, -3.0]),
             ),
         ),
     }
