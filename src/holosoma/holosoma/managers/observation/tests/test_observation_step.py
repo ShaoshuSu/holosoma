@@ -138,6 +138,38 @@ def test_noise_does_not_draw_from_the_global_rng() -> None:
     assert not torch.equal(noisy, torch.zeros_like(noisy))
 
 
+def test_noise_follows_the_global_seed() -> None:
+    def noise_after_seed(seed: int) -> torch.Tensor:
+        torch.manual_seed(seed)
+        manager = _manager(_env(), enable_noise=True, terms={"value": ObsTermCfg(func=f"{_HERE}:env_value", noise=0.5)})
+        return _step(manager)
+
+    # The global seed carries the per-rank offset, so ranks get different noise.
+    assert torch.equal(noise_after_seed(1), noise_after_seed(1))
+    assert not torch.equal(noise_after_seed(1), noise_after_seed(2))
+
+
+class LeadingViewTerm(CounterTerm):
+    """Counter that serves the first ``len(env_ids)`` envs as a view of its buffer."""
+
+    def __call__(self, env: Any, env_ids: torch.Tensor | None = None, **kwargs: Any) -> torch.Tensor:
+        if env_ids is None:
+            return super().__call__(env)
+        self.count[env_ids] += 1
+        return self.count[: len(env_ids)].unsqueeze(1)
+
+
+def test_terminal_obs_survive_reset_of_term_state() -> None:
+    manager = _manager(_env(), terms={"counter": ObsTermCfg(func=f"{_HERE}:LeadingViewTerm")})
+    _step(manager)
+
+    manager.new_frame()
+    terminal = _policy(manager.step_terminal(torch.tensor([0])))
+    manager.reset(torch.tensor([0]))
+
+    assert terminal.tolist() == [[2.0]]
+
+
 def test_get_obs_dims_does_not_advance_stateful_terms() -> None:
     manager = _manager(_env())
 

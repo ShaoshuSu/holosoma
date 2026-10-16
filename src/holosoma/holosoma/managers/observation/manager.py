@@ -44,10 +44,10 @@ class ObservationManager:
         # History buffers: group_name -> term_name -> deque
         self._history_buffers: dict[str, dict[str, deque[torch.Tensor]]] = {}
 
-        # Dedicated noise stream, so observation noise never shifts the global RNG. The seed is offset
-        # so this stream does not replay the global generator's when both are seeded alike.
+        # Dedicated noise stream, so observation noise never shifts the global RNG. Seeded from the global
+        # seed (which carries the per-rank offset), shifted so it does not replay the global generator's.
         self._noise_generator = torch.Generator(device=device)
-        self._noise_generator.manual_seed(getattr(env, "dr_base_seed", 0) + 0x0B5E)
+        self._noise_generator.manual_seed(torch.initial_seed() + 0x0B5E)
 
         # Per-frame clock (see new_frame): at most one step_terminal then one step per frame, and
         # every row advanced by step_terminal must be reset before step.
@@ -221,7 +221,8 @@ class ObservationManager:
             # Stateful term
             instance = self._term_instances[group_name][term_name]
             obs = instance(self.env, env_ids=env_ids, **term_cfg.params)
-            return obs.clone() if env_ids is None else obs
+            # Clone even for a row subset: the term may return a view of state that reset() then overwrites.
+            return obs.clone()
 
         # Stateless function
         func = self._term_funcs[group_name][term_name]
