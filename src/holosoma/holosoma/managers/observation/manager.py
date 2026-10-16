@@ -49,8 +49,8 @@ class ObservationManager:
         self._noise_generator = torch.Generator(device=device)
         self._noise_generator.manual_seed(getattr(env, "dr_base_seed", 0) + 0x0B5E)
 
-        # Per-frame clock (see new_frame): at most one compute_terminal then one step per frame, and
-        # every row advanced by compute_terminal must be reset before step.
+        # Per-frame clock (see new_frame): at most one step_terminal then one step per frame, and
+        # every row advanced by step_terminal must be reset before step.
         self._frame_ready = False
         self._terminal_ran = False
         self._terminal_rows = torch.zeros(env.num_envs, dtype=torch.bool, device=device)
@@ -84,7 +84,7 @@ class ObservationManager:
                     self._history_buffers[group_name][term_name] = deque(maxlen=group_cfg.history_length)
 
     def new_frame(self) -> None:
-        """Mark that the simulation advanced, allowing one :meth:`compute_terminal` and one :meth:`step`.
+        """Mark that the simulation advanced, allowing one :meth:`step_terminal` and one :meth:`step`.
 
         Registered on the simulator's ``FRAME_END`` hook by the env; call it directly when driving the
         manager without one.
@@ -107,13 +107,13 @@ class ObservationManager:
             raise RuntimeError("ObservationManager.step() already ran for this frame; call new_frame() first.")
         if self._terminal_ran and bool(self._terminal_rows.any()):
             raise RuntimeError(
-                "ObservationManager.step() called before resetting the envs advanced by compute_terminal()."
+                "ObservationManager.step() called before resetting the envs advanced by step_terminal()."
             )
         self._frame_ready = False
         return {group_name: self._compute_group(group_name, None) for group_name in self.cfg.groups}
 
-    def compute_terminal(self, env_ids: torch.Tensor) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
-        """Compute the observations of ``env_ids`` in their current (terminal) state.
+    def step_terminal(self, env_ids: torch.Tensor) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
+        """Step ``env_ids`` in their current (terminal) state and return their observations.
 
         Stateful terms advance only ``env_ids``, and history buffers are left untouched, so the
         caller must :meth:`reset` those envs before the next :meth:`step`. Allowed once per frame,
@@ -130,7 +130,7 @@ class ObservationManager:
             As :meth:`step`, with ``len(env_ids)`` rows per tensor.
         """
         if not self._frame_ready or self._terminal_ran:
-            raise RuntimeError("ObservationManager.compute_terminal() must run once per frame, before step().")
+            raise RuntimeError("ObservationManager.step_terminal() must run once per frame, before step().")
         self._terminal_ran = True
         env_ids = env_ids.to(device=self.device, dtype=torch.long)
         self._terminal_rows[env_ids] = True

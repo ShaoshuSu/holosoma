@@ -79,12 +79,12 @@ def test_second_step_in_a_frame_raises() -> None:
         manager.step()
 
 
-def test_compute_terminal_advances_only_its_rows() -> None:
+def test_step_terminal_advances_only_its_rows() -> None:
     manager = _manager(_env())
     _step(manager)
 
     manager.new_frame()
-    terminal = _policy(manager.compute_terminal(torch.tensor([0])))
+    terminal = _policy(manager.step_terminal(torch.tensor([0])))
     assert terminal.tolist() == [[2.0]]
 
     manager.reset(torch.tensor([0]))
@@ -95,22 +95,22 @@ def test_compute_terminal_advances_only_its_rows() -> None:
 def test_step_before_resetting_terminal_rows_raises() -> None:
     manager = _manager(_env())
     manager.new_frame()
-    manager.compute_terminal(torch.tensor([1]))
+    manager.step_terminal(torch.tensor([1]))
 
     with pytest.raises(RuntimeError, match="before resetting"):
         manager.step()
 
 
-def test_compute_terminal_after_step_or_twice_raises() -> None:
+def test_step_terminal_after_step_or_twice_raises() -> None:
     manager = _manager(_env())
     _step(manager)
     with pytest.raises(RuntimeError, match="once per frame"):
-        manager.compute_terminal(torch.tensor([0]))
+        manager.step_terminal(torch.tensor([0]))
 
     manager.new_frame()
-    manager.compute_terminal(torch.tensor([0]))
+    manager.step_terminal(torch.tensor([0]))
     with pytest.raises(RuntimeError, match="once per frame"):
-        manager.compute_terminal(torch.tensor([0]))
+        manager.step_terminal(torch.tensor([0]))
 
 
 def test_terminal_history_appends_current_frame_without_modifying_buffers() -> None:
@@ -121,7 +121,7 @@ def test_terminal_history_appends_current_frame_without_modifying_buffers() -> N
 
     env.value = torch.tensor([[2.0], [20.0]])
     manager.new_frame()
-    assert _policy(manager.compute_terminal(torch.tensor([1]))).tolist() == [[10.0, 20.0]]
+    assert _policy(manager.step_terminal(torch.tensor([1]))).tolist() == [[10.0, 20.0]]
 
     manager.reset(torch.tensor([1]))
     # Env 0's history holds one entry per step; env 1's was cleared by the reset.

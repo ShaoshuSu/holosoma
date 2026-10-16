@@ -609,7 +609,7 @@ class BaseTask:
         self.obs_buf_dict = self.observation_manager.step()
 
     def _compute_final_observations(self, env_ids: torch.Tensor) -> dict[str, Any]:
-        return self.observation_manager.compute_terminal(env_ids)
+        return self.observation_manager.step_terminal(env_ids)
 
     def _update_tasks_callback(self) -> None:
         self.command_manager.step()
