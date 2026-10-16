@@ -136,22 +136,28 @@ class ObservationManager:
         self._terminal_rows[env_ids] = True
         return {group_name: self._compute_group(group_name, env_ids) for group_name in self.cfg.groups}
 
-    def clip_obs_value(self, value: Any) -> Any:
-        """Clip one observation group value to ``[-clip_observations, clip_observations]``.
+    def clip_observations(self, obs_dict: dict[str, Any]) -> dict[str, Any]:
+        """Clip observations to ``[-clip_observations, clip_observations]``.
+
+        Only 2-D float tensors are clipped; image terms and other values are returned unchanged.
 
         Parameters
         ----------
-        value : Any
-            A group's tensor, or its dict of per-term tensors for a ``concatenate=False`` group.
+        obs_dict : dict[str, Any]
+            Observations keyed by group, as returned by :meth:`step` or :meth:`step_terminal`.
 
         Returns
         -------
-        Any
-            ``value`` with its 2-D float tensors clipped; other values are returned unchanged.
+        dict[str, Any]
+            A new dict with the clipped observations.
         """
+        return {group_name: self._clip_value(value) for group_name, value in obs_dict.items()}
+
+    def _clip_value(self, value: Any) -> Any:
+        """Clip one group's tensor, or each tensor of a ``concatenate=False`` group's dict."""
         # A concatenate=False group is a dict of per-term tensors; recurse one level.
         if isinstance(value, dict):
-            return {k: self.clip_obs_value(v) for k, v in value.items()}
+            return {k: self._clip_value(v) for k, v in value.items()}
         # Only clip flat (2-D [N, feature]) float observations. Image/depth terms
         # ([N, H, W, C]) are not bounded observations and clipping would corrupt them
         # (e.g. collapse the depth +inf no-hit sentinel to clip_limit).

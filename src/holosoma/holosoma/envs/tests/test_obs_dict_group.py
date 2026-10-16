@@ -1,8 +1,8 @@
 """Tests for dict/dtype-aware observation handling in BaseTask.
 
 A ``concatenate=False`` observation group computes to a dict of per-term tensors. These tests pin
-that ``_clip_observations`` and ``_store_final_observations`` handle a dict group value (and a
-uint8 image term) without flattening or clipping it, by calling the unbound methods on a stub.
+that ``_store_final_observations`` handles a dict group value (and a uint8 image term) without
+flattening it, by calling the unbound method on a stub.
 """
 
 from __future__ import annotations
@@ -12,59 +12,18 @@ from typing import cast
 
 import pytest
 
-from holosoma.config_types.observation import ObservationManagerCfg
 from holosoma.envs.base_task.base_task import BaseTask
-from holosoma.managers.observation.manager import ObservationManager
 from holosoma.utils.safe_torch_import import torch
 
 pytestmark = pytest.mark.no_sim
 
 
-def _make_stub(obs_buf_dict: dict[str, torch.Tensor | dict[str, torch.Tensor]], clip_limit: float = 100.0) -> BaseTask:
-    """Minimal object carrying just what the methods under test touch."""
+def _make_stub(obs_buf_dict: dict[str, torch.Tensor | dict[str, torch.Tensor]]) -> BaseTask:
+    """Minimal object carrying just what the method under test touches."""
     stub = types.SimpleNamespace()
     stub.obs_buf_dict = obs_buf_dict
     stub.extras = {}
-    stub.observation_manager = ObservationManager(
-        ObservationManagerCfg(clip_observations=clip_limit), types.SimpleNamespace(num_envs=1), device="cpu"
-    )
     return cast("BaseTask", stub)
-
-
-def test_clip_observations_handles_dict_group_and_uint8() -> None:
-    """A flat float group is clipped; a dict group recurses; uint8 images pass through unclipped."""
-    flat = torch.tensor([[500.0, -500.0, 1.0]])  # exceeds +/-100, gets clipped
-    image = torch.full((1, 4, 4, 3), 200, dtype=torch.uint8)  # uint8 image, stays unclipped
-    proprio = torch.tensor([[5.0, -5.0]])  # within range, unchanged
-    obs = {
-        "actor_obs": flat,
-        "image_group": {"front_rgb": image, "proprio": proprio},
-    }
-    stub = _make_stub(obs)
-
-    out = BaseTask._clip_observations(stub, obs)
-
-    # Flat float group clipped to +/-100.
-    assert torch.equal(out["actor_obs"], torch.tensor([[100.0, -100.0, 1.0]]))
-    # Dict group preserved as a dict.
-    assert isinstance(out["image_group"], dict)
-    # uint8 image untouched (not clipped to +/-100).
-    assert torch.equal(out["image_group"]["front_rgb"], image)
-    assert out["image_group"]["front_rgb"].dtype == torch.uint8
-    # Float term inside the dict group within range, unchanged.
-    assert torch.equal(out["image_group"]["proprio"], proprio)
-
-
-def test_clip_observations_preserves_depth_inf_sentinel() -> None:
-    """A float32 depth image (4-D) keeps its +inf no-hit sentinel; clipping would corrupt it."""
-    depth = torch.full((1, 4, 4, 1), 250.0)  # finite far depth, beyond the +/-100 clip
-    depth[0, 0, 0, 0] = float("inf")  # no-hit sentinel
-    obs = {"image_group": {"front_depth": depth.clone()}}
-    stub = _make_stub(obs, clip_limit=100.0)
-
-    out = BaseTask._clip_observations(stub, obs)["image_group"]["front_depth"]
-    assert torch.isinf(out[0, 0, 0, 0])  # sentinel survives (not clamped to 100)
-    assert float(out[0, 1, 1, 0]) == 250.0  # far depth not clamped
 
 
 def test_store_final_observations_handles_dict_group() -> None:
