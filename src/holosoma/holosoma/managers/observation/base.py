@@ -23,7 +23,7 @@ class ObservationTermBase(ABC):
     - :meth:`__call__` once per control step, for the observations the policy acts on. It may
       advance internal state (shift a buffer, sample noise).
     - :meth:`peek` for any other read of the current state, such as the final observations of
-      envs about to reset. It must not advance internal state.
+      envs about to reset. It must have no side effects: no state change and no RNG draws.
     - :meth:`output_shape` to size buffers and networks. It must not advance internal state
       and may skip computing the observation.
 
@@ -75,7 +75,12 @@ class ObservationTermBase(ABC):
         """
 
     def peek(self, env: Any, **kwargs: Any) -> torch.Tensor:
-        """Compute the observation of the current state without advancing internal state.
+        """Compute the observation of the current state, consistent with the last step read, without side effects.
+
+        A peek changes no internal state and draws no random numbers, so any number of peeks
+        leaves the next :meth:`__call__` unaffected. A term whose step read samples randomness
+        (noise, augmentation, a resampled delay) cannot reproduce it under that rule; its peek
+        may leave that randomness out, and the term documents what it omits.
 
         The default calls :meth:`__call__`, which is correct only for terms whose
         ``__call__`` has no side effects. Terms that advance state per call must override it.
@@ -85,7 +90,7 @@ class ObservationTermBase(ABC):
             **kwargs: Additional parameters from config
 
         Returns:
-            Observation tensor of shape [num_envs, ...], as :meth:`__call__` would return
+            Observation tensor of shape [num_envs, ...], the same shape :meth:`__call__` returns
         """
         return self(env, **kwargs)
 
