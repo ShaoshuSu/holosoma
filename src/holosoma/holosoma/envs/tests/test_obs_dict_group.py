@@ -1,8 +1,9 @@
 """Tests for dict/dtype-aware observation handling in BaseTask.
 
 A ``concatenate=False`` observation group computes to a dict of per-term tensors. These tests pin
-that ``_clip_observations`` and ``_store_final_observations`` handle a dict group value (and a
-uint8 image term) without flattening or clipping it, by calling the unbound methods on a stub.
+that ``_clip_observations``, ``_compute_final_observations`` and ``_store_final_observations`` handle
+a dict group value (and a uint8 image term) without flattening or clipping it, by calling the unbound
+methods on a stub.
 """
 
 from __future__ import annotations
@@ -99,3 +100,18 @@ def test_store_final_observations_empty_is_noop() -> None:
     stub = _make_stub({"actor_obs": torch.zeros(2, 2)})
     BaseTask._store_final_observations(stub, torch.tensor([0]), {})
     assert "final_observations" not in stub.extras
+
+
+def test_final_observations_are_clipped_like_step_observations() -> None:
+    """Terminal observations use the step observations' clip limit; image terms stay unclipped."""
+    depth = torch.full((1, 2, 2, 1), float("inf"))
+    stub = _make_stub({}, clip_limit=1.0)
+    stub.observation_manager.step_terminal = lambda env_ids: {  # type: ignore[method-assign]
+        "critic_obs": torch.tensor([[-2.0, 0.5, 3.0]]),
+        "image_group": {"front_depth": depth},
+    }
+
+    final = BaseTask._compute_final_observations(stub, torch.tensor([0]))
+
+    assert torch.equal(final["critic_obs"], torch.tensor([[-1.0, 0.5, 1.0]]))
+    assert torch.isinf(final["image_group"]["front_depth"]).all()
