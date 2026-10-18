@@ -18,7 +18,7 @@ CliOptions parse(std::vector<std::string> args) { return parse_cli(args, kPreset
 
 TEST(Config, PresetsLoad) {
   const auto presets = list_presets(kPresetDir);
-  ASSERT_EQ(presets, (std::vector<std::string>{"g1-29dof-loco", "g1-29dof-wbt"}));
+  ASSERT_EQ(presets, (std::vector<std::string>{"g1-29dof-general-wbt", "g1-29dof-loco", "g1-29dof-wbt"}));
 
   const auto loco = parse({"inference:g1-29dof-loco"}).config;
   EXPECT_FALSE(loco.is_wbt());
