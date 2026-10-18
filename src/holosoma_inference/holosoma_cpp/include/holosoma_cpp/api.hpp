@@ -12,11 +12,13 @@
 
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "holosoma_cpp/config.hpp"
 #include "holosoma_cpp/controller.hpp"
+#include "holosoma_cpp/general_wbt_policy.hpp"
 #include "holosoma_cpp/input.hpp"
 #include "holosoma_cpp/policy.hpp"
 #include "holosoma_cpp/robot_interface.hpp"
@@ -71,9 +73,27 @@ class Policy {
     context_.robot = &robot_;
     context_.velocity_input = &velocity_;
     context_.command_provider = &commands_;
-    policy_ = make_policy(config_, context_);
-    policy_->initialize();
+    // make_policy's heuristic keys on a motion_command term, which the 0p2s actor-only
+    // contract does not have -- it would hand such an export to LocomotionPolicy. Select on the
+    // second actor group instead, which is that contract's structural signature.
+    if (has_group("actor_targets")) {
+      policy_ = std::make_unique<GeneralWBTPolicy>(config_, context_);
+      policy_->initialize();
+    } else {
+      policy_ = make_policy(config_, context_);  // calls initialize() itself
+    }
     policy_->force_policy_active();
+  }
+
+  // Required before step() for an actor-only export, which takes its reference from the host.
+  // Borrowed, never owned, so a clip and a live stream are swappable between steps. Throws for
+  // a policy that carries its own motion.
+  void set_reference(const ReferenceWindow* window) {
+    auto* tracker = dynamic_cast<GeneralWBTPolicy*>(policy_.get());
+    if (tracker == nullptr) {
+      throw std::runtime_error("this preset's policy carries its own reference");
+    }
+    tracker->set_reference(window);
   }
 
   // One tick. The command is returned rather than published.
@@ -89,6 +109,13 @@ class Policy {
   BasePolicy& policy() { return *policy_; }  // escape hatch
 
  private:
+  bool has_group(const std::string& name) const {
+    for (const auto& [group, terms] : config_.observation.obs_dict) {
+      if (group == name) return true;
+    }
+    return false;
+  }
+
   InferenceConfig config_;
   OfflineInterface robot_;
   detail::NoVelocity velocity_;

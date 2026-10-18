@@ -21,6 +21,7 @@ set(HOLOSOMA_PRESET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/config/inference" CACHE PAT
     "Directory with the inference presets (inference:<name>)")
 
 add_library(holosoma_cpp_core
+  src/general_wbt_policy.cpp
   src/cli.cpp
   src/commands.cpp
   src/config.cpp

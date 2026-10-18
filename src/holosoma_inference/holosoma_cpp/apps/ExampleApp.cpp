@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <stdexcept>
 #include <thread>
 
 #include "holosoma_cpp/api.hpp"
@@ -19,6 +20,18 @@ int main(int argc, char** argv) {
 
   Policy policy(argv[1], argc > 2 ? argv[2] : "");
   const int n = policy.num_dofs();
+
+  // An actor-only export takes its reference from the host; one with a baked clip refuses this.
+  // Your clip or retargeter fills the five future offsets (0, 2, 4, 6, 8 frames) each tick.
+  ReferenceWindow window;
+  window.q.assign(static_cast<size_t>(kNumOffsets * n), 0.0);
+  window.dq.assign(static_cast<size_t>(kNumOffsets * n), 0.0);
+  window.quat.assign(kNumOffsets, {1.0, 0.0, 0.0, 0.0});
+  try {
+    policy.set_reference(&window);
+  } catch (const std::runtime_error&) {
+    // This preset's policy carries its own motion.
+  }
 
   // Your subscriber fills this; synthetic here so the example needs no robot.
   RobotState state;
