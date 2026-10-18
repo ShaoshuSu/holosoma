@@ -60,6 +60,9 @@ set_target_properties(holosoma_run_policy PROPERTIES
   BUILD_RPATH "${ONNXRuntime_LIBRARY_DIR}"
   INSTALL_RPATH "\$ORIGIN/../lib;${ONNXRuntime_LIBRARY_DIR}")
 
+add_executable(ExampleApp apps/ExampleApp.cpp)
+target_link_libraries(ExampleApp PRIVATE holosoma_cpp_core yaml-cpp::yaml-cpp)
+
 install(TARGETS holosoma_run_policy RUNTIME DESTINATION bin)
 
 if(HOLOSOMA_BUILD_TESTS)
