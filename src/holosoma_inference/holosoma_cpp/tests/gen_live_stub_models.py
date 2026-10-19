@@ -183,12 +183,24 @@ def _write_model(
     onnx.save(model, path)
 
 
+def _write_named_model(path: Path) -> None:
+    """A different humanoid's ordered joints, including a non-root FK anchor."""
+    _write_model(path, body_name="link_28")
+    model = onnx.load(path)
+    replacements = {name: f"joint_{index}" for index, name in enumerate(DOF_NAMES)}
+    for item in model.metadata_props:
+        for old, new in replacements.items():
+            item.value = item.value.replace(old, new)
+    onnx.save(model, path)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args()
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    _write_named_model(output / "named_humanoid.onnx")
 
     _write_model(output / "split_history.onnx", history=2, lookahead_layout="split")
     _write_model(output / "legacy_history.onnx", history=2, lookahead_layout="legacy")

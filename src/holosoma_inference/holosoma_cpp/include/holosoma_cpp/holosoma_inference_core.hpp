@@ -59,6 +59,7 @@ class WbtPolicy {
   bool HeadingInitialized() const { return heading_initialized_; }
   bool IsInitialized() const { return initialized_; }
   const std::string &AnchorBodyName() const { return anchor_body_name_; }
+  const std::vector<std::string> &JointNames() const { return joint_names_; }
 
   static bool IsWbtModelFile(const std::string &model_path);
 
@@ -102,6 +103,7 @@ class WbtPolicy {
   bool initialized_ = false;
   std::string model_path_;
   std::string anchor_body_name_ = "pelvis";
+  std::vector<std::string> joint_names_;
   std::unique_ptr<FkBody> fk_body_;
 
   std::array<float, kActionDim> default_dof_pos_{};

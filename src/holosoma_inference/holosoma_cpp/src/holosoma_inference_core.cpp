@@ -126,8 +126,8 @@ bool JsonFloatArray(const std::unordered_map<std::string, std::string> &meta, co
 
 class WbtPolicy::FkBody {
  public:
-  FkBody(const std::string &urdf, const std::string &body_name)
-      : chain_(urdf, body_name, {kG1BodyJointNames.begin(), kG1BodyJointNames.end()}) {}
+  FkBody(const std::string &urdf, const std::string &body_name, const std::vector<std::string> &joint_names)
+      : chain_(urdf, body_name, joint_names) {}
 
   bool Orientation(const std::array<float, 4> &root_quat_wxyz, const std::array<float, kActionDim> &dof_pos,
                    math::Quatf &out) const {
@@ -240,14 +240,18 @@ bool WbtPolicy::ParseMetadata(std::string &error) {
     try {
       const json names = json::parse(metadata.at("dof_names"));
       if (!names.is_array() || names.size() != kActionDim) {
-        error = "metadata dof_names must contain the canonical 29 G1 joints";
+        error = "metadata dof_names must contain 29 unique named joints";
         return false;
       }
+      joint_names_.clear();
+      std::set<std::string> unique;
       for (int i = 0; i < kActionDim; ++i) {
-        if (names.at(i).get<std::string>() != kG1BodyJointNames[i]) {
-          error = "metadata dof_names does not match canonical G1 order at index " + std::to_string(i);
+        const auto name = names.at(i).get<std::string>();
+        if (name.empty() || !unique.insert(name).second) {
+          error = "metadata dof_names contains an empty or duplicate joint at index " + std::to_string(i);
           return false;
         }
+        joint_names_.push_back(name);
       }
     } catch (const std::exception &e) {
       error = std::string("cannot parse metadata dof_names: ") + e.what();
@@ -276,11 +280,11 @@ bool WbtPolicy::ParseMetadata(std::string &error) {
         return false;
       }
       for (int i = 0; i < kActionDim; ++i) {
-        if (!defaults.contains(kG1BodyJointNames[i])) {
-          error = "experiment_config default_joint_angles is missing \"" + std::string(kG1BodyJointNames[i]) + "\"";
+        if (!defaults.contains(joint_names_[i])) {
+          error = "experiment_config default_joint_angles is missing \"" + joint_names_[i] + "\"";
           return false;
         }
-        default_dof_pos_[i] = defaults.at(kG1BodyJointNames[i]).get<float>();
+        default_dof_pos_[i] = defaults.at(joint_names_[i]).get<float>();
       }
     } catch (const std::exception &e) {
       error = std::string("cannot parse default_joint_angles: ") + e.what();
@@ -313,7 +317,7 @@ bool WbtPolicy::ParseMetadata(std::string &error) {
       try {
         json urdf_json = json::parse(metadata.at("robot_urdf"), nullptr, false);
         const std::string urdf = urdf_json.is_string() ? urdf_json.get<std::string>() : metadata.at("robot_urdf");
-        fk_body_ = std::make_unique<FkBody>(urdf, anchor_body_name_);
+        fk_body_ = std::make_unique<FkBody>(urdf, anchor_body_name_, joint_names_);
       } catch (const std::exception &e) {
         error = std::string("cannot initialize URDF FK for anchor \"") + anchor_body_name_ + "\": " + e.what();
         return false;

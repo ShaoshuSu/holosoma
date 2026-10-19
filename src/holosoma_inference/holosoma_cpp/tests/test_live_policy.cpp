@@ -78,6 +78,13 @@ TEST(WbtPolicyInit, DetectsAndLoadsMetadataCompleteSingleFileModels) {
   EXPECT_NEAR(policy.Kd()[7], 4.7f, 1e-6f);
 }
 
+TEST(WbtPolicyInit, SupportsMetadataNamedHumanoidsWithNonRootAnchor) {
+  WbtPolicy policy;
+  ASSERT_TRUE(policy.Initialize(Model("named_humanoid.onnx")));
+  EXPECT_FLOAT_EQ(policy.DefaultDofPos()[7], 0.07f);
+  EXPECT_EQ(policy.AnchorBodyName(), "link_28");
+}
+
 TEST(WbtPolicyInit, RejectsAMetadataShapeMismatch) {
   WbtPolicy policy;
   EXPECT_FALSE(policy.Initialize(Model("bad_shape.onnx")));

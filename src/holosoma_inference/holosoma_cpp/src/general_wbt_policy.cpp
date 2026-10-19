@@ -46,10 +46,10 @@ GeneralWBTPolicy::GeneralWBTPolicy(InferenceConfig config, PolicyContext& contex
 }
 
 void GeneralWBTPolicy::setup_policy(ModelSlot& slot) {
-  const std::vector<std::string> names(live::kG1BodyJointNames.begin(), live::kG1BodyJointNames.end());
-  if (config_.robot.dof_names != names) throw ConfigError("Live WBT requires canonical G1 joint order");
   auto core = std::make_unique<live::WbtPolicy>();
   if (!core->Initialize(slot.model)) throw ConfigError(slot.path + ": invalid live WBT checkpoint");
+  if (config_.robot.dof_names != core->JointNames())
+    throw ConfigError("Live WBT robot.dof_names must match checkpoint metadata order");
   core->SetControlInterval(1.0 / config_.task.rl_rate);
   cores_.push_back(std::move(core));
 }

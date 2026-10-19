@@ -85,9 +85,11 @@ command = policy.step(state)
 ```
 
 The snippet illustrates the types, not a robot motion sequence. Live frames use
-canonical G1 joint order, wxyz orientation, body-local angular velocity and SI
+the checkpoint's metadata joint order, wxyz orientation, body-local angular velocity and SI
 units. `reset_heading()` reanchors heading and motion phase while preserving
 history; `reset()` starts a new episode and clears history/action feedback.
+
+The convenience live preset defaults to canonical G1 joint names. For another 29-joint humanoid, set `config.robot.dof_names` to its checkpoint's ordered `dof_names` before constructing `Policy`. The library requires exact agreement, including order, and derives default positions and anchor FK from those names. State, reference, command, and gain arrays all follow this same order; transports must reorder named wire messages at their boundary.
 With no explicit elapsed clock, the live API advances one model timestep per call. Update `set_elapsed_seconds(seconds)` before each tick to preserve motion phase across dropped ticks; pass `None` to return to tick counting. `set_control_interval(seconds)` sets the elapsed-clock conversion. Python retains only the currently supplied reference and returns independent command snapshots. `set_reference(None)` clears it. The former `LiveWbtPolicy` entry point remains available for compatibility.
 
 The reference is offset-major, with one quaternion per frame. Window dimensions must match the checkpoint; malformed or non-finite input is rejected before inference. The first future sample is also the current reference unless `ReferenceWindow.current` explicitly supplies a `PolicyReferenceFrame`. The default 0p2s preset uses five offsets, but metadata-complete checkpoints may declare other layouts.
