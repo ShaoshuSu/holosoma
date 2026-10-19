@@ -65,11 +65,16 @@ class NativePolicy:
                 resolved_path = str(load_checkpoint(None, resolved_path))
             resolved.append(resolved_path)
         native_config = replace(config, task=replace(config.task, model_path=resolved))
-        self._engine = _native.InferenceEngine(_native_config(native_config, use_gpu=use_gpu), autostart)
+        self._engine = _native.Policy.from_config(_native_config(native_config, use_gpu=use_gpu), autostart)
 
     def reset(self):
         with self._lock:
             self._engine.reset()
+
+    def set_reference(self, window):
+        """Use a native ReferenceWindow for actor-only tracking; retain it until replaced."""
+        with self._lock:
+            self._engine.set_reference(window)
 
     def step(self, obs):
         with self._lock:
@@ -142,9 +147,15 @@ class WholeBodyTrackingPolicy(NativePolicy):
     """Embedded-motion native WBT inference without a hardware interface."""
 
 
+class GeneralWBTPolicy(NativePolicy):
+    """Metadata-driven WBT; the host supplies a ReferenceWindow before stepping."""
+
+
 def get_policy_from_preset(config: InferenceConfig | str, **kwargs) -> NativePolicy:
     if isinstance(config, str):
         config = get_config(config)
+    if "actor_targets" in config.observation.obs_dict:
+        return GeneralWBTPolicy(config, **kwargs)
     cls = (
         WholeBodyTrackingPolicy
         if "motion_command" in config.observation.obs_dict.get("actor_obs", [])

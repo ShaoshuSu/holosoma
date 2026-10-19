@@ -29,12 +29,13 @@ set(HOLOSOMA_PRESET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/config/inference" CACHE PAT
     "Directory with the inference presets (inference:<name>)")
 
 add_library(holosoma_cpp_core SHARED
+  src/general_wbt_policy.cpp
   src/cli.cpp
   src/commands.cpp
   src/config.cpp
   src/controller.cpp
   src/input.cpp
-  src/inference_engine.cpp
+  src/api.cpp
   src/holosoma_inference_core.cpp
   src/locomotion_policy.cpp
   src/logging.cpp
@@ -76,6 +77,9 @@ set_target_properties(holosoma_run_policy PROPERTIES
 
 install(TARGETS holosoma_run_policy RUNTIME DESTINATION bin)
 endif()
+
+add_executable(ExampleApp apps/ExampleApp.cpp)
+target_link_libraries(ExampleApp PRIVATE holosoma_cpp_core ${HOLOSOMA_YAML_TARGET})
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)

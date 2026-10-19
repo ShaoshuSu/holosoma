@@ -1,51 +1,56 @@
-#include "holosoma_cpp/inference_engine.hpp"
+#include "holosoma_cpp/api.hpp"
 
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <stdexcept>
 
-#include "holosoma_cpp/locomotion_policy.hpp"
+#include "holosoma_cpp/controller.hpp"
 #include "holosoma_cpp/wbt_policy.hpp"
 
 namespace holosoma {
 namespace {
-class MemoryRobot final : public RobotInterface {
- public:
-  RobotState state;
-  JointCommand command;
-  bool have_state = false;
-  bool read_state(RobotState& out) override {
-    out = state;
-    return have_state;
-  }
-  void send_command(const JointCommand& out) override { command = out; }
-  std::optional<WirelessController> read_wireless_controller() override { return std::nullopt; }
-  std::string description() const override { return "in-process observations"; }
-};
 class MemoryVelocity final : public VelocityProvider {
  public:
   std::optional<VelCmd> poll_velocity() override { return std::nullopt; }
   void zero() override {}
 };
+class NoCommands final : public CommandProvider {
+ public:
+  std::vector<StateCommand> poll_commands() override { return {}; }
+  void bind(const std::string&, StateCommand) override {}
+};
+
+InferenceConfig load_preset(const std::string& preset, const std::string& checkpoint) {
+  std::ifstream file(preset);
+  if (!file) throw ConfigError("Cannot open preset: " + preset);
+  std::ostringstream text;
+  text << file.rdbuf();
+  auto config = config_from_yaml(text.str(), std::filesystem::absolute(preset).parent_path().string());
+  if (!checkpoint.empty()) config.task.model_path = {checkpoint};
+  return config;
+}
 }  // namespace
 
-struct InferenceEngine::Impl {
-  MemoryRobot robot;
+struct Policy::Impl {
+  OfflineInterface robot;
   MemoryVelocity velocity;
+  NoCommands commands;
   PolicyContext context;
   std::unique_ptr<BasePolicy> policy;
   bool autostart = false;
   bool pending_engagement = false;
 };
 
-InferenceEngine::InferenceEngine(InferenceConfig config, bool autostart) : impl_(std::make_unique<Impl>()) {
+Policy::Policy(const std::string& preset, const std::string& checkpoint) : Policy(load_preset(preset, checkpoint)) {}
+
+Policy::Policy(InferenceConfig config, bool autostart) : impl_(std::make_unique<Impl>()) {
   validate_inference_config(config);
   impl_->context.robot = &impl_->robot;
   impl_->context.velocity_input = &impl_->velocity;
-  if (config.is_wbt())
-    impl_->policy = std::make_unique<WholeBodyTrackingPolicy>(config, impl_->context);
-  else
-    impl_->policy = std::make_unique<LocomotionPolicy>(config, impl_->context);
-  impl_->policy->initialize();
+  impl_->context.command_provider = &impl_->commands;
+  impl_->policy = make_policy(config, impl_->context);
   impl_->autostart = autostart;
   impl_->pending_engagement = autostart;
   if (autostart) {
@@ -53,9 +58,18 @@ InferenceEngine::InferenceEngine(InferenceConfig config, bool autostart) : impl_
     if (config.is_wbt()) impl_->policy->dispatch_command(StateCommand::START_MOTION_CLIP);
   }
 }
-InferenceEngine::~InferenceEngine() = default;
+Policy::~Policy() = default;
 
-std::vector<double> InferenceEngine::step(const std::vector<float>& observation) {
+void Policy::set_reference(const ReferenceWindow* window) {
+  auto* tracker = dynamic_cast<GeneralWBTPolicy*>(impl_->policy.get());
+  if (!tracker) throw std::runtime_error("this preset's policy carries its own reference");
+  tracker->set_reference(window);
+}
+int Policy::num_dofs() const { return config().robot.num_joints; }
+const std::vector<std::string>& Policy::dof_names() const { return config().robot.dof_names; }
+const InferenceConfig& Policy::config() const { return impl_->policy->config(); }
+
+std::vector<double> Policy::step(const std::vector<float>& observation) {
   auto offsets = impl_->policy->infer_observation(observation);
   const auto& cfg = impl_->policy->config().robot;
   if (offsets.size() > cfg.default_dof_angles.size()) throw std::runtime_error("Action exceeds robot dimension");
@@ -68,7 +82,7 @@ std::vector<double> InferenceEngine::step(const std::vector<float>& observation)
   return offsets;
 }
 
-void InferenceEngine::set_state(const RobotState& state) {
+void Policy::set_state(const RobotState& state) {
   const auto n = static_cast<size_t>(impl_->policy->config().robot.num_joints);
   if (state.base_pos.size() != 3 || state.base_quat_wxyz.size() != 4 || state.base_lin_vel.size() != 3 ||
       state.base_ang_vel.size() != 3 || state.dof_pos.size() != n || state.dof_vel.size() != n)
@@ -86,15 +100,14 @@ void InferenceEngine::set_state(const RobotState& state) {
     for (double v : *state.projected_gravity)
       if (!std::isfinite(v)) throw std::invalid_argument("Corrected gravity must be finite");
   }
-  impl_->robot.state = state;
-  impl_->robot.have_state = true;
+  impl_->robot.set_state(state);
 }
 
-std::vector<double> InferenceEngine::infer_offsets(const RobotState& state) {
+std::vector<double> Policy::infer_offsets(const RobotState& state) {
   set_state(state);
   return impl_->policy->infer_offsets(state);
 }
-JointCommand InferenceEngine::step_state(const RobotState& state, bool advance_phase) {
+JointCommand Policy::step_state(const RobotState& state, bool advance_phase) {
   set_state(state);
   if (impl_->pending_engagement) {
     impl_->policy->handle_start_policy();
@@ -103,18 +116,22 @@ JointCommand InferenceEngine::step_state(const RobotState& state, bool advance_p
   }
   if (advance_phase) update_phase();
   impl_->policy->policy_action(state);
-  return impl_->robot.command;
+  return impl_->robot.command();
 }
-void InferenceEngine::command(StateCommand cmd) {
+const JointCommand& Policy::step(const RobotState& state) {
+  step_state(state);
+  return impl_->robot.command();
+}
+void Policy::command(StateCommand cmd) {
   if (cmd == StateCommand::START || cmd == StateCommand::STOP || cmd == StateCommand::INIT)
     impl_->pending_engagement = false;
   impl_->policy->dispatch_command(cmd);
 }
-void InferenceEngine::velocity(const VelCmd& cmd) { impl_->policy->apply_velocity(cmd); }
-void InferenceEngine::update_phase() {
+void Policy::velocity(const VelCmd& cmd) { impl_->policy->apply_velocity(cmd); }
+void Policy::update_phase() {
   if (impl_->policy->use_phase()) impl_->policy->update_phase_time();
 }
-void InferenceEngine::reset() {
+void Policy::reset() {
   impl_->policy->reset();
   impl_->pending_engagement = impl_->autostart;
   if (impl_->autostart) {
@@ -122,5 +139,6 @@ void InferenceEngine::reset() {
     if (impl_->policy->config().is_wbt()) impl_->policy->dispatch_command(StateCommand::START_MOTION_CLIP);
   }
 }
-const BasePolicy& InferenceEngine::policy() const { return *impl_->policy; }
+BasePolicy& Policy::policy() { return *impl_->policy; }
+const BasePolicy& Policy::policy() const { return *impl_->policy; }
 }  // namespace holosoma

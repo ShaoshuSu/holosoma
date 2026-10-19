@@ -13,17 +13,32 @@ from holosoma_inference.native import (
 
 __all__ = [
     "InferenceConfig",
+    "JointCommand",
     "LiveRobotObservation",
     "LiveWbtPolicy",
     "LocomotionPolicy",
+    "Policy",
+    "PolicyReferenceFrame",
     "ReferenceFrame",
     "ReferenceSequence",
+    "ReferenceWindow",
+    "RobotState",
     "WholeBodyTrackingPolicy",
     "get_config",
     "get_policy_from_preset",
 ]
 
-_LIVE_TYPES = {"LiveWbtPolicy", "LiveRobotObservation", "ReferenceFrame", "ReferenceSequence"}
+_LIVE_TYPES = {
+    "LiveWbtPolicy",
+    "LiveRobotObservation",
+    "ReferenceFrame",
+    "ReferenceSequence",
+    "Policy",
+    "PolicyReferenceFrame",
+    "RobotState",
+    "JointCommand",
+    "ReferenceWindow",
+}
 
 
 def __getattr__(name):

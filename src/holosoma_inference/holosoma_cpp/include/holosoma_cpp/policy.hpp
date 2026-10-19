@@ -92,7 +92,7 @@ class BasePolicy {
  protected:
   struct ModelSlot {
     std::string path;
-    std::unique_ptr<OnnxModel> model;
+    std::shared_ptr<OnnxModel> model;
     std::vector<double> kp;  // joint order
     std::vector<double> kd;
     std::string gain_source;

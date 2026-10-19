@@ -170,14 +170,25 @@ bool WbtPolicy::Initialize(const std::string &model_path, bool use_gpu, int intr
   }
 
   try {
-    session_ = std::make_unique<holosoma::OnnxModel>(model_path, use_gpu, intra_op_threads);
+    auto session = std::make_shared<holosoma::OnnxModel>(model_path, use_gpu, intra_op_threads);
+    std::cout << "[WbtPolicy] inference provider: "
+              << (use_gpu ? "CUDAExecutionProvider (device 0)" : "CPUExecutionProvider") << std::endl;
+    return Initialize(std::move(session));
   } catch (const std::exception &e) {
     std::cerr << "[WbtPolicy] failed to load " << model_path << ": " << e.what() << std::endl;
     return false;
   }
+}
+
+bool WbtPolicy::Initialize(std::shared_ptr<holosoma::OnnxModel> session) {
+  initialized_ = false;
+  session_ = std::move(session);
+  fk_body_.reset();
+  anchor_body_name_ = "pelvis";
+  motion_command_dim_ = 0;
+  if (!session_) return false;
+  const auto &model_path = session_->path();
   model_path_ = model_path;
-  std::cout << "[WbtPolicy] inference provider: "
-            << (use_gpu ? "CUDAExecutionProvider (device 0)" : "CPUExecutionProvider") << std::endl;
 
   std::string error;
   bool valid = false;

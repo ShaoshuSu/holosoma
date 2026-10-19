@@ -1,10 +1,14 @@
 """Exercise the installed native library with a real ONNX model, no robot SDK."""
 
+import gc
 import json
+import runpy
 import subprocess
 import sys
+import weakref
 from dataclasses import replace
 from importlib.resources import files
+from pathlib import Path
 
 import numpy as np
 import onnx
@@ -122,6 +126,60 @@ def test_preset_lookup_does_not_share_mutable_observation_maps():
     config = inference.get_config("g1-29dof-loco")
     config.observation.obs_dims["native_test_only"] = 9
     assert "native_test_only" not in inference.get_config("g1-29dof-loco").observation.obs_dims
+
+
+def test_python_factory_uses_the_public_policy_interface(native_config):
+    config, _ = native_config
+    policy = inference.get_policy_from_preset(config)
+    assert isinstance(policy._engine, inference.Policy)
+    state = inference.RobotState()
+    state.dof_pos = [0.0] * 29
+    state.dof_vel = [0.0] * 29
+    command = policy._engine.step(state)
+    assert isinstance(command, inference.JointCommand)
+    assert len(command.q) == policy._engine.num_dofs() == len(policy._engine.dof_names) == 29
+    with pytest.raises(RuntimeError, match="own reference"):
+        policy._engine.set_reference(inference.ReferenceWindow())
+
+
+def test_public_policy_borrows_one_reference_and_returns_command_snapshots(tmp_path):
+    generator = Path(__file__).parents[1] / "holosoma_cpp/tests/gen_live_stub_models.py"
+    write_model = runpy.run_path(str(generator))["_write_model"]
+    checkpoint = tmp_path / "live.onnx"
+    write_model(checkpoint, history=9, lookahead_layout="flat_0p2s")
+    policy = inference.Policy.from_live_model(str(checkpoint))
+    assert policy.lookahead_offsets == [0, 2, 4, 6, 8]
+    state = inference.RobotState()
+    state.dof_pos = state.dof_vel = [0.0] * 29
+    with pytest.raises(RuntimeError, match="set_reference"):
+        policy.step(state)
+
+    def window():
+        reference = inference.ReferenceWindow()
+        reference.q = reference.dq = [0.0] * (5 * 29)
+        reference.quat = [[1, 0, 0, 0]] * 5
+        return reference
+
+    first = window()
+    retained = weakref.ref(first)
+    policy.set_reference(first)
+    del first
+    gc.collect()
+    assert retained() is not None
+    command = policy.step(state)
+    saved = list(command.q)
+    for _ in range(9):
+        policy.step(state)
+    assert command.q == saved
+    assert policy.step(state).q != saved
+    assert len(policy.last_observation) == 2267
+    policy.set_reference(window())
+    gc.collect()
+    assert retained() is None
+    assert len(policy.step(state).q) == 29
+    policy.set_reference(None)
+    with pytest.raises(RuntimeError, match="set_reference"):
+        policy.step(state)
 
 
 def test_library_accepts_robot_config_with_host_transport_fields(native_config):

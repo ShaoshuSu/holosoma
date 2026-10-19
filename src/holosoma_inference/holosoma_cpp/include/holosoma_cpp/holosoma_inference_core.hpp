@@ -24,6 +24,8 @@ class WbtPolicy {
   WbtPolicy &operator=(const WbtPolicy &) = delete;
 
   bool Initialize(const std::string &model_path, bool use_gpu = false, int intra_op_threads = 2);
+  // Share the already-loaded session with a library policy slot; never load a second graph.
+  bool Initialize(std::shared_ptr<holosoma::OnnxModel> session);
   bool ComputeAction(const RobotObservation &obs, const WbtReferenceSequence &reference, float *action_out);
 
   // The `time_step` graph input, in MOTION timesteps rather than policy ticks.
@@ -124,7 +126,7 @@ class WbtPolicy {
   bool engage_anchored_ = false;
   float last_time_step_ = 0.0f;
 
-  std::unique_ptr<holosoma::OnnxModel> session_;
+  std::shared_ptr<holosoma::OnnxModel> session_;
   std::vector<float> obs_input_;
 };
 

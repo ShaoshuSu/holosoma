@@ -2,8 +2,8 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include "holosoma_cpp/api.hpp"
 #include "holosoma_cpp/holosoma_inference_core.hpp"
-#include "holosoma_cpp/inference_engine.hpp"
 #include "holosoma_cpp/wbt_policy.hpp"
 
 namespace py = pybind11;
@@ -40,11 +40,73 @@ PYBIND11_MODULE(_native, m) {
       .def_readonly("tau", &JointCommand::tau)
       .def_readonly("kp", &JointCommand::kp)
       .def_readonly("kd", &JointCommand::kd);
-  py::class_<InferenceEngine>(m, "InferenceEngine")
-      .def(py::init([](const std::string& config, bool autostart) {
-             return std::make_unique<InferenceEngine>(config_from_yaml(config), autostart);
-           }),
-           py::arg("config"), py::arg("autostart") = true)
+  py::class_<ReferenceFrame>(m, "PolicyReferenceFrame")
+      .def(py::init<>())
+      .def_readwrite("q", &ReferenceFrame::q)
+      .def_readwrite("dq", &ReferenceFrame::dq)
+      .def_readwrite("quat", &ReferenceFrame::quat);
+  py::class_<ReferenceWindow>(m, "ReferenceWindow")
+      .def(py::init<>())
+      .def_readwrite("q", &ReferenceWindow::q)
+      .def_readwrite("dq", &ReferenceWindow::dq)
+      .def_readwrite("quat", &ReferenceWindow::quat)
+      .def_readwrite("current", &ReferenceWindow::current);
+  // Keep the former engine name source-compatible while exposing the public front door.
+  using InferenceEngine = Policy;
+  py::class_<Policy>(m, "Policy", py::dynamic_attr())
+      .def(py::init<const std::string&, const std::string&>(), py::arg("preset"), py::arg("checkpoint") = "")
+      .def_static(
+          "from_config",
+          [](const std::string& config, bool autostart) {
+            return std::make_unique<Policy>(config_from_yaml(config), autostart);
+          },
+          py::arg("config"), py::arg("autostart") = true)
+      .def_static(
+          "from_live_model",
+          [](const std::string& checkpoint, bool use_gpu, int threads) {
+            return std::make_unique<Policy>(live_policy_config(checkpoint, use_gpu, threads));
+          },
+          py::arg("checkpoint"), py::arg("use_gpu") = false, py::arg("intra_op_threads") = 2)
+      .def(
+          "set_reference",
+          [](py::object self, py::object window) {
+            self.cast<Policy&>().set_reference(window.is_none() ? nullptr : window.cast<const ReferenceWindow*>());
+            self.attr("_reference") = window;  // replace ownership rather than retaining every past window
+          },
+          py::arg("window"))
+      .def(
+          "step", [](Policy& policy, const RobotState& state) { return JointCommand(policy.step(state)); },
+          py::arg("state"), py::call_guard<py::gil_scoped_release>())
+      .def("num_dofs", &Policy::num_dofs)
+      .def_property_readonly("dof_names", &Policy::dof_names)
+      .def_property_readonly("lookahead_offsets",
+                             [](const Policy& policy) {
+                               const auto* tracker = dynamic_cast<const GeneralWBTPolicy*>(&policy.policy());
+                               return tracker ? tracker->core().TrainedLookaheadOffsets() : std::vector<int>{};
+                             })
+      .def(
+          "set_elapsed_seconds",
+          [](Policy& policy, std::optional<double> elapsed) {
+            auto* tracker = dynamic_cast<GeneralWBTPolicy*>(&policy.policy());
+            if (!tracker) throw py::value_error("Elapsed reference time requires live WBT");
+            if (elapsed)
+              tracker->core().SetElapsedSecondsFn([value = *elapsed] { return value; });
+            else
+              tracker->core().SetElapsedSecondsFn({});
+          },
+          py::arg("elapsed_seconds"))
+      .def("set_control_interval",
+           [](Policy& policy, double interval) {
+             auto* tracker = dynamic_cast<GeneralWBTPolicy*>(&policy.policy());
+             if (!tracker) throw py::value_error("Reference control interval requires live WBT");
+             tracker->core().SetControlInterval(interval);
+           })
+      .def("reset_heading",
+           [](Policy& policy) {
+             auto* tracker = dynamic_cast<GeneralWBTPolicy*>(&policy.policy());
+             if (!tracker) throw py::value_error("Reference heading reset requires live WBT");
+             tracker->core().ResetHeading();
+           })
       .def("step",
            [](InferenceEngine& engine, py::array_t<float, py::array::c_style | py::array::forcecast> obs) {
              auto values = observation(obs);
@@ -94,6 +156,14 @@ PYBIND11_MODULE(_native, m) {
       .def_property_readonly("last_observation", [](const InferenceEngine& e) { return e.policy().last_observation(); })
       .def_property_readonly("joint_kp", [](const InferenceEngine& e) { return e.policy().joint_kp(); })
       .def_property_readonly("joint_kd", [](const InferenceEngine& e) { return e.policy().joint_kd(); });
+
+  // The serialized-config preview constructor remains available for existing callers.
+  m.def(
+      "InferenceEngine",
+      [](const std::string& config, bool autostart) {
+        return std::make_unique<Policy>(config_from_yaml(config), autostart);
+      },
+      py::arg("config"), py::arg("autostart") = true);
 
   py::class_<live::RobotObservation>(m, "LiveRobotObservation")
       .def(py::init<>())

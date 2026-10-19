@@ -6,6 +6,8 @@ policy opens no robot, socket, keyboard listener or SDK interface.
 
 ## Python
 
+The shared front door is `Policy(preset_path, checkpoint_path)`. Its `step(RobotState)` returns a `JointCommand` for locomotion, embedded-motion WBT or host-reference WBT. `set_reference(ReferenceWindow)` supplies the latter's reference. The preset/config factories below compose this same class.
+
 Build the extension with a C++17 compiler and CMake:
 
 ```sh
@@ -67,26 +69,28 @@ SONIC-aligned layout names refer to NVIDIA's public
 The parser retains the corresponding exporter metadata keys for compatibility.
 
 ```python
-from holosoma_inference import (
-    LiveWbtPolicy, LiveRobotObservation, ReferenceFrame, ReferenceSequence,
-)
+from holosoma_inference import Policy, RobotState, ReferenceWindow
 
-policy = LiveWbtPolicy("live-policy.onnx")
-observation = LiveRobotObservation()
-reference = ReferenceSequence()
-reference.current = ReferenceFrame()
-offsets = policy.lookahead_offsets(8)
-# Supply actual caller-buffered frames at these offsets; zero is the cursor.
-reference.lookahead = [ReferenceFrame() for _ in offsets]
-targets = policy.step(observation, reference, elapsed_seconds=0.0)
+policy = Policy.from_live_model("live-policy.onnx")
+state = RobotState()
+state.dof_pos = state.dof_vel = [0.0] * policy.num_dofs()
+reference = ReferenceWindow()
+slots = max(1, len(policy.lookahead_offsets))
+# Replace these illustrative values with caller-buffered frames at the trained offsets.
+reference.q = reference.dq = [0.0] * (slots * policy.num_dofs())
+reference.quat = [[1.0, 0.0, 0.0, 0.0]] * slots
+policy.set_reference(reference)
+policy.set_elapsed_seconds(0.0)
+command = policy.step(state)
 ```
 
 The snippet illustrates the types, not a robot motion sequence. Live frames use
 canonical G1 joint order, wxyz orientation, body-local angular velocity and SI
 units. `reset_heading()` reanchors heading and motion phase while preserving
 history; `reset()` starts a new episode and clears history/action feedback.
-With no explicit elapsed clock, the live API advances one model timestep per
-call. `set_control_interval(seconds)` sets the elapsed-clock conversion.
+With no explicit elapsed clock, the live API advances one model timestep per call. Update `set_elapsed_seconds(seconds)` before each tick to preserve motion phase across dropped ticks; pass `None` to return to tick counting. `set_control_interval(seconds)` sets the elapsed-clock conversion. Python retains only the currently supplied reference and returns independent command snapshots. `set_reference(None)` clears it. The former `LiveWbtPolicy` entry point remains available for compatibility.
+
+The reference is offset-major, with one quaternion per frame. Window dimensions must match the checkpoint; malformed or non-finite input is rejected before inference. The first future sample is also the current reference unless `ReferenceWindow.current` explicitly supplies a `PolicyReferenceFrame`. The default 0p2s preset uses five offsets, but metadata-complete checkpoints may declare other layouts.
 
 ## C++
 
@@ -97,13 +101,19 @@ cmake --build build/native -j
 cmake --install build/native --prefix "$HOME/.local"
 ```
 
-Consumers use `find_package(holosomaInference CONFIG REQUIRED)` and link
-`holosoma::inference`. Include `holosoma_cpp/inference_engine.hpp`, construct an
-`InferenceEngine` from `InferenceConfig` or `config_from_yaml(text)`, and call
-`step` or `step_state`. The live-reference API is in
-`holosoma_cpp/holosoma_inference_core.hpp`. No robot SDK is needed to link either
-API. Each C++ engine has a single owner; serialize calls to an instance. The
-Python facade serializes its calls and releases the GIL during native inference.
+Consumers use `find_package(holosomaInference CONFIG REQUIRED)` and link `holosoma::inference`. No robot SDK or YAML header is needed by consumers:
+
+```cpp
+#include <holosoma_cpp/api.hpp>
+
+holosoma::Policy policy("preset.yaml", "checkpoint.onnx");
+holosoma::RobotState state;  // fill joint positions, velocities and base orientation
+const holosoma::JointCommand& command = policy.step(state);
+```
+
+Relative model paths inside a preset resolve against its directory. An explicit checkpoint argument resolves against the caller's working directory. For metadata-complete live models, construct `Policy(live_policy_config(path, use_gpu, threads))`; supply a borrowed `ReferenceWindow` before stepping and keep it alive until replaced. `num_dofs()`, `dof_names()`, `config()` and the `policy()` escape hatch follow the same API for all three policy families. `OfflineInterface` is also exported for shadow-mode integrations.
+
+`GeneralWBTPolicy` adapts the metadata-driven core rather than maintaining another observation implementation. It shares the policy slot's ONNX session, including CUDA/thread options. `InferenceEngine` is a compatibility alias. Configuration factories, packed observations and explicit engagement remain available as composition extensions. Each instance has one owner; serialize calls, including reference mutation. The high-level Python preset facade provides a lock; direct `Policy` bindings release the GIL during inference and require caller serialization.
 
 ## Command-line compatibility
 

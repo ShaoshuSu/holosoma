@@ -27,3 +27,11 @@ add_dependencies(holosoma_live_tests holosoma_live_fixtures)
 target_link_libraries(holosoma_live_tests PRIVATE holosoma_cpp_core ONNXRuntime::ONNXRuntime GTest::gtest_main)
 target_compile_definitions(holosoma_live_tests PRIVATE HOLOSOMA_LIVE_FIXTURE_DIR="${LIVE_FIXTURES}")
 gtest_discover_tests(holosoma_live_tests DISCOVERY_TIMEOUT 60)
+
+add_executable(holosoma_api_tests test_api.cpp)
+add_dependencies(holosoma_api_tests holosoma_live_fixtures)
+target_link_libraries(holosoma_api_tests PRIVATE holosoma_cpp_core ${HOLOSOMA_YAML_TARGET} GTest::gtest_main)
+target_compile_definitions(holosoma_api_tests PRIVATE
+  HOLOSOMA_LIVE_FIXTURE_DIR="${LIVE_FIXTURES}"
+  HOLOSOMA_TEST_PRESET_DIR="${HOLOSOMA_PRESET_DIR}")
+gtest_discover_tests(holosoma_api_tests DISCOVERY_TIMEOUT 60)
