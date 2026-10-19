@@ -18,7 +18,6 @@ if(NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM)
 endif()
 
 find_package(Threads REQUIRED)
-find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 
 function(_holosoma_require_fetch name)
   if(NOT HOLOSOMA_FETCH_DEPENDENCIES)
@@ -26,6 +25,17 @@ function(_holosoma_require_fetch name)
   endif()
   message(STATUS "holosoma: downloading ${name}")
 endfunction()
+
+find_package(Eigen3 3.3 QUIET NO_MODULE)
+if(NOT Eigen3_FOUND)
+  _holosoma_require_fetch(Eigen3)
+  set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+  set(EIGEN_BUILD_DOC OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(eigen
+    URL https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz
+    URL_HASH SHA256=8586084f71f9bde545ee7fa6d00288b264a2b7ac3607b974e54d13e7162c1c72)
+  FetchContent_MakeAvailable(eigen)
+endif()
 
 # --- yaml-cpp ----------------------------------------------------------------
 find_package(yaml-cpp 0.6 CONFIG QUIET)

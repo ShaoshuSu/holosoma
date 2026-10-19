@@ -1,9 +1,10 @@
 #include "holosoma_cpp/inference_engine.hpp"
-#include "holosoma_cpp/locomotion_policy.hpp"
-#include "holosoma_cpp/wbt_policy.hpp"
 
 #include <cmath>
 #include <stdexcept>
+
+#include "holosoma_cpp/locomotion_policy.hpp"
+#include "holosoma_cpp/wbt_policy.hpp"
 
 namespace holosoma {
 namespace {
@@ -12,7 +13,10 @@ class MemoryRobot final : public RobotInterface {
   RobotState state;
   JointCommand command;
   bool have_state = false;
-  bool read_state(RobotState& out) override { out = state; return have_state; }
+  bool read_state(RobotState& out) override {
+    out = state;
+    return have_state;
+  }
   void send_command(const JointCommand& out) override { command = out; }
   std::optional<WirelessController> read_wireless_controller() override { return std::nullopt; }
   std::string description() const override { return "in-process observations"; }
@@ -22,7 +26,7 @@ class MemoryVelocity final : public VelocityProvider {
   std::optional<VelCmd> poll_velocity() override { return std::nullopt; }
   void zero() override {}
 };
-}
+}  // namespace
 
 struct InferenceEngine::Impl {
   MemoryRobot robot;
@@ -35,10 +39,15 @@ InferenceEngine::InferenceEngine(InferenceConfig config, bool autostart) : impl_
   validate_inference_config(config);
   impl_->context.robot = &impl_->robot;
   impl_->context.velocity_input = &impl_->velocity;
-  if (config.is_wbt()) impl_->policy = std::make_unique<WholeBodyTrackingPolicy>(config, impl_->context);
-  else impl_->policy = std::make_unique<LocomotionPolicy>(config, impl_->context);
+  if (config.is_wbt())
+    impl_->policy = std::make_unique<WholeBodyTrackingPolicy>(config, impl_->context);
+  else
+    impl_->policy = std::make_unique<LocomotionPolicy>(config, impl_->context);
   impl_->policy->initialize();
-  if (autostart) impl_->policy->force_policy_active();
+  if (autostart) {
+    impl_->policy->force_policy_active();
+    if (config.is_wbt()) impl_->policy->dispatch_command(StateCommand::START_MOTION_CLIP);
+  }
 }
 InferenceEngine::~InferenceEngine() = default;
 
@@ -60,12 +69,19 @@ void InferenceEngine::set_state(const RobotState& state) {
   if (state.base_pos.size() != 3 || state.base_quat_wxyz.size() != 4 || state.base_lin_vel.size() != 3 ||
       state.base_ang_vel.size() != 3 || state.dof_pos.size() != n || state.dof_vel.size() != n)
     throw std::invalid_argument("Robot state dimensions do not match the configuration");
-  for (const auto* values : {&state.base_pos, &state.base_quat_wxyz, &state.base_lin_vel,
-                             &state.base_ang_vel, &state.dof_pos, &state.dof_vel})
-    for (double v : *values) if (!std::isfinite(v)) throw std::invalid_argument("Robot state must be finite");
+  for (const auto* values : {&state.base_pos, &state.base_quat_wxyz, &state.base_lin_vel, &state.base_ang_vel,
+                             &state.dof_pos, &state.dof_vel})
+    for (double v : *values)
+      if (!std::isfinite(v)) throw std::invalid_argument("Robot state must be finite");
   double norm = 0;
-  for (double v : state.base_quat_wxyz) norm += v*v;
+  for (double v : state.base_quat_wxyz) norm += v * v;
   if (norm < 1e-16) throw std::invalid_argument("Robot orientation must be nonzero");
+  if (state.projected_gravity) {
+    if (state.projected_gravity->size() != 3)
+      throw std::invalid_argument("Corrected gravity must have three components");
+    for (double v : *state.projected_gravity)
+      if (!std::isfinite(v)) throw std::invalid_argument("Corrected gravity must be finite");
+  }
   impl_->robot.state = state;
   impl_->robot.have_state = true;
 }
@@ -76,7 +92,9 @@ JointCommand InferenceEngine::step_state(const RobotState& state) {
 }
 void InferenceEngine::command(StateCommand cmd) { impl_->policy->dispatch_command(cmd); }
 void InferenceEngine::velocity(const VelCmd& cmd) { impl_->policy->apply_velocity(cmd); }
-void InferenceEngine::update_phase() { if (impl_->policy->use_phase()) impl_->policy->update_phase_time(); }
+void InferenceEngine::update_phase() {
+  if (impl_->policy->use_phase()) impl_->policy->update_phase_time();
+}
 void InferenceEngine::reset() { impl_->policy->reset(); }
 const BasePolicy& InferenceEngine::policy() const { return *impl_->policy; }
 }  // namespace holosoma

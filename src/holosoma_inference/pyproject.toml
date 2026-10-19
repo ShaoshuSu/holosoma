@@ -14,8 +14,7 @@ dependencies = [
     "pydantic",
     "loguru",
     "netifaces",
-    "onnx",
-    "onnxruntime",
+    "numpy",
     "scipy",
     "sshkeyboard",
     "termcolor",
@@ -27,18 +26,15 @@ dependencies = [
     "evdev",
     "importlib_metadata>=4.6; python_version<'3.12'",
     "eval_type_backport; python_version<'3.10'",
-    # pinocchio, imported by policies/wbt_utils.py. pin and its dep coal both stopped
-    # shipping cp38 wheels while still advertising Requires-Python >=3.8, so on the
-    # isaacgym env (py3.8) pip falls back to their sdists and the source builds need
-    # cmeel packages that were never published. Cap both to their last cp38 release,
-    # on the 3.8 leg only; py3.9+ tracks latest.
-    "pin<=3.7.0; python_version<'3.9'",
-    "coal<=3.0.1; python_version<'3.9'",
-    "pin; python_version>='3.9'",
 ]
 
 [project.optional-dependencies]
 dev = [
+    "onnx",
+    "onnxruntime",
+    "pin<=3.7.0; python_version<'3.9'",
+    "coal<=3.0.1; python_version<'3.9'",
+    "pin; python_version>='3.9'",
     "pytest>=6.0",
     "black>=22.0",
     "flake8>=4.0",
@@ -67,6 +63,7 @@ g1-29dof-wbt = "holosoma_inference.config.config_values.inference:g1_29dof_wbt"
 [tool.scikit-build]
 cmake.source-dir = "holosoma_cpp"
 wheel.packages = ["holosoma_inference"]
+wheel.exclude = ["**/tests/**", "**/__pycache__/**"]
 sdist.include = ["holosoma_cpp/**", "holosoma_inference/**"]
 
 [tool.scikit-build.cmake.define]

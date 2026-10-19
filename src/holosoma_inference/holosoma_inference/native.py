@@ -18,7 +18,7 @@ def get_config(name: str) -> InferenceConfig:
     from holosoma_inference.utils.config_registry import load_entrypoint_presets
 
     load_entrypoint_presets(INFERENCE_REGISTRY)
-    return copy.deepcopy(INFERENCE_REGISTRY[name[len("inference:"):] if name.startswith("inference:") else name])
+    return copy.deepcopy(INFERENCE_REGISTRY[name[len("inference:") :] if name.startswith("inference:") else name])
 
 
 def _native_config(config: InferenceConfig, *, use_gpu=False) -> str:
@@ -76,15 +76,18 @@ class NativePolicy:
         if values.ndim == 2 and values.shape[0] == 1:
             values = values[0]
         n = self.config.robot.num_joints
-        if values.shape != (13 + 2 * n,):
-            raise ValueError(f"Expected robot state shape ({13 + 2 * n},) or (1,{13 + 2 * n})")
+        width = 13 + 2 * n
+        if values.shape not in {(width,), (width + 3,)}:
+            raise ValueError(f"Expected one robot state with {width} values, optionally followed by corrected gravity")
         state = _native.RobotState()
         state.base_pos = values[:3]
         state.base_quat_wxyz = values[3:7]
         state.dof_pos = values[7 : 7 + n]
         state.base_lin_vel = values[7 + n : 10 + n]
         state.base_ang_vel = values[10 + n : 13 + n]
-        state.dof_vel = values[13 + n :]
+        state.dof_vel = values[13 + n : width]
+        if len(values) == width + 3:
+            state.projected_gravity = values[width:]
         state.tick_ms = tick_ms
         return state
 
@@ -121,5 +124,9 @@ class WholeBodyTrackingPolicy(NativePolicy):
 def get_policy_from_preset(config: InferenceConfig | str, **kwargs) -> NativePolicy:
     if isinstance(config, str):
         config = get_config(config)
-    cls = WholeBodyTrackingPolicy if "motion_command" in config.observation.obs_dict.get("actor_obs", []) else LocomotionPolicy
+    cls = (
+        WholeBodyTrackingPolicy
+        if "motion_command" in config.observation.obs_dict.get("actor_obs", [])
+        else LocomotionPolicy
+    )
     return cls(config, **kwargs)

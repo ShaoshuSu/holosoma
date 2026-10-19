@@ -65,9 +65,10 @@ class DualModePolicy:
     The existing Select/1-9 multi-model switching still works within each policy.
     """
 
-    def __init__(self, primary_config: InferenceConfig, secondary_config: InferenceConfig):
-        primary_cls = _select_policy_class(primary_config)
-        secondary_cls = _select_policy_class(secondary_config)
+    def __init__(self, primary_config: InferenceConfig, secondary_config: InferenceConfig, *, policy_selector=None):
+        selector = policy_selector or _select_policy_class
+        primary_cls = selector(primary_config)
+        secondary_cls = selector(secondary_config)
 
         logger.info(
             colored(f"Dual-mode: primary={primary_cls.__name__}, secondary={secondary_cls.__name__}", "magenta")
@@ -79,6 +80,7 @@ class DualModePolicy:
         # Init secondary with shared hardware
         logger.info(colored("Initializing secondary policy (shared hardware)...", "magenta"))
         from holosoma_inference.policies.native_runner import NativeRunnerPolicy
+
         if issubclass(secondary_cls, NativeRunnerPolicy):
             secondary = secondary_cls(config=secondary_config, shared_hardware=self.primary)
         else:
@@ -196,3 +198,8 @@ class DualModePolicy:
 
         except KeyboardInterrupt:
             pass
+        finally:
+            for policy in (self.secondary, self.primary):
+                close = getattr(policy, "close", None)
+                if callable(close):
+                    close()

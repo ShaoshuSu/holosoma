@@ -107,6 +107,8 @@ struct InferenceConfig {
 
 // Parses a full inference document. Relative model paths resolve against `base_dir`.
 InferenceConfig parse_inference_config(const YAML::Node& node, const std::string& base_dir);
+// Library callers need no YAML headers or parser dependency.
+InferenceConfig config_from_yaml(const std::string& text, const std::string& base_dir = "");
 
 // Checks cross-field invariants (lengths, supported inputs, ...). Throws ConfigError.
 void validate_inference_config(const InferenceConfig& config);

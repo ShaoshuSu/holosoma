@@ -410,6 +410,10 @@ InferenceConfig parse_inference_config(const YAML::Node& node, const std::string
   return parse_document(node, base_dir, "config", nullptr);
 }
 
+InferenceConfig config_from_yaml(const std::string& text, const std::string& base_dir) {
+  return parse_inference_config(YAML::Load(text), base_dir);
+}
+
 void validate_inference_config(const InferenceConfig& config) {
   validate_one(config, "config");
   if (config.secondary) {

@@ -14,3 +14,16 @@ set_target_properties(holosoma_cpp_tests PROPERTIES BUILD_RPATH "${ONNXRuntime_L
 
 include(GoogleTest)
 gtest_discover_tests(holosoma_cpp_tests WORKING_DIRECTORY "${HOLOSOMA_REPO_ROOT}" DISCOVERY_TIMEOUT 60)
+
+find_package(Python COMPONENTS Interpreter REQUIRED)
+set(LIVE_FIXTURES "${CMAKE_CURRENT_BINARY_DIR}/live-fixtures")
+add_custom_command(OUTPUT "${LIVE_FIXTURES}/stamp"
+  COMMAND "${Python_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/gen_live_stub_models.py" --output-dir "${LIVE_FIXTURES}"
+  COMMAND ${CMAKE_COMMAND} -E touch "${LIVE_FIXTURES}/stamp"
+  DEPENDS gen_live_stub_models.py)
+add_custom_target(holosoma_live_fixtures DEPENDS "${LIVE_FIXTURES}/stamp")
+add_executable(holosoma_live_tests test_live_policy.cpp)
+add_dependencies(holosoma_live_tests holosoma_live_fixtures)
+target_link_libraries(holosoma_live_tests PRIVATE holosoma_cpp_core ONNXRuntime::ONNXRuntime GTest::gtest_main)
+target_compile_definitions(holosoma_live_tests PRIVATE HOLOSOMA_LIVE_FIXTURE_DIR="${LIVE_FIXTURES}")
+gtest_discover_tests(holosoma_live_tests DISCOVERY_TIMEOUT 60)

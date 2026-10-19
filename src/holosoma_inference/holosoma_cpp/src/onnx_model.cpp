@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <stdexcept>
 
+#include "holosoma_cpp/cuda_provider.hpp"
+
 namespace holosoma {
 namespace {
 
@@ -55,10 +57,7 @@ OnnxModel::OnnxModel(const std::string& path, bool use_gpu, int intra_op_threads
   options.SetInterOpNumThreads(1);
   options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
   if (use_gpu) {
-    OrtCUDAProviderOptions cuda_options{};
-    cuda_options.device_id = 0;
-    options.AppendExecutionProvider_CUDA(cuda_options);
-    options.AddConfigEntry("session.disable_cpu_ep_fallback", "1");
+    enable_cuda(options);
   }
   try {
     impl_->session = std::make_unique<Ort::Session>(ort_env(), path.c_str(), options);

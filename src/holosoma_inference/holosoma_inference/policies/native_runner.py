@@ -8,10 +8,10 @@ import numpy as np
 
 from holosoma_inference.inputs.api.commands import StateCommand
 from holosoma_inference.native import NativePolicy
-from holosoma_inference.policies.base import BasePolicy
+from holosoma_inference.policies.transport import RunnerTransport
 
 
-class NativeRunnerPolicy(BasePolicy):
+class NativeRunnerPolicy(RunnerTransport):
     """Retain Python SDK plugins and input providers; execute policy logic in C++.
 
     Explicit injection is supported without pre-initialization attribute patches:
@@ -20,17 +20,26 @@ class NativeRunnerPolicy(BasePolicy):
 
     is_wbt = False
 
-    def __init__(self, config, *, interface=None, velocity_input=None, command_provider=None, shared_hardware=None):
+    def __init__(
+        self, config, *, interface=None, velocity_input=None, command_provider=None, shared_hardware=None, clock=None
+    ):
         self.config = config
         self._init_robot_config(config.robot)
         self.native = NativePolicy(config, autostart=False)
-        self.model_paths = list(config.task.model_path) if isinstance(config.task.model_path, (list, tuple)) else [config.task.model_path]
-        self._init_latency_tracking()
+        self.model_paths = (
+            list(config.task.model_path)
+            if isinstance(config.task.model_path, (list, tuple))
+            else [config.task.model_path]
+        )
         self._init_rate_handler()
+        self._init_latency_tracking()
         self.use_phase = config.task.use_phase
         self.use_keyboard = False
         self.use_joystick = bool({"interface", "joystick"} & {config.task.velocity_input, config.task.state_input})
         self.cmd_q = np.zeros(self.num_dofs)
+        self._clock = clock
+        self._owns_clock = False
+        self._owns_inputs = velocity_input is None and command_provider is None and shared_hardware is None
         if shared_hardware is not None:
             interface = shared_hardware.interface
             velocity_input = shared_hardware._velocity_input
@@ -49,6 +58,17 @@ class NativeRunnerPolicy(BasePolicy):
             raise ValueError("Supply both velocity_input and command_provider")
         else:
             self._init_input_device()
+        if self.is_wbt and config.task.use_sim_time and self._clock is None:
+            if shared_hardware is not None and getattr(shared_hardware, "_clock", None) is not None:
+                self._clock = shared_hardware._clock
+            else:
+                from holosoma_inference.utils.clock import ClockSub
+
+                self._clock = ClockSub()
+                self._clock.start()
+                self._owns_clock = True
+        if self.is_wbt and shared_hardware is None and not config.task.skip_stiff_prompt and sys.stdin.isatty():
+            input("Ready to enter stiff hold mode. Press Enter to continue...")
 
     @property
     def use_policy_action(self):
@@ -71,15 +91,13 @@ class NativeRunnerPolicy(BasePolicy):
         return self.model_paths[self.active_policy_index]
 
     def _resolve_control_gains(self):
-        # Native gains are joint-ordered. Python SDK overrides take motor order
-        # and apply their own operator gain scale, so do not apply it twice.
-        order = self.robot_config.motor2joint
-        self._kp = np.asarray(self.native._engine.joint_kp)[order]
-        self._kd = np.asarray(self.native._engine.joint_kd)[order]
+        # Both native commands and Python SDK overrides are joint-ordered.
+        # SDK transport owns motor permutation and its operator gain scale.
+        self._kp = np.asarray(self.native._engine.joint_kp)
+        self._kd = np.asarray(self.native._engine.joint_kd)
 
     def _tick_ms(self):
-        clock = getattr(self.interface, "get_sim_time", None)
-        return int(clock() * 1000) if callable(clock) else 0
+        return self._clock.get_clock() if self._clock is not None else 0
 
     def _apply_velocity(self, command):
         self.native.velocity(float(command.lin_vel[0]), float(command.lin_vel[1]), float(command.ang_vel))
@@ -93,15 +111,32 @@ class NativeRunnerPolicy(BasePolicy):
     def _dispatch_command(self, command):
         if command == StateCommand.KILL:
             raise SystemExit(0)
-        if command in {StateCommand.KP_UP, StateCommand.KP_DOWN, StateCommand.KP_UP_FINE, StateCommand.KP_DOWN_FINE, StateCommand.KP_RESET}:
-            increments = {StateCommand.KP_UP: 0.1, StateCommand.KP_DOWN: -0.1, StateCommand.KP_UP_FINE: 0.01, StateCommand.KP_DOWN_FINE: -0.01}
-            self.interface.kp_level = 1.0 if command == StateCommand.KP_RESET else max(0.0, self.interface.kp_level + increments[command])
+        if command in {
+            StateCommand.KP_UP,
+            StateCommand.KP_DOWN,
+            StateCommand.KP_UP_FINE,
+            StateCommand.KP_DOWN_FINE,
+            StateCommand.KP_RESET,
+        }:
+            increments = {
+                StateCommand.KP_UP: 0.1,
+                StateCommand.KP_DOWN: -0.1,
+                StateCommand.KP_UP_FINE: 0.01,
+                StateCommand.KP_DOWN_FINE: -0.01,
+            }
+            self.interface.kp_level = (
+                1.0 if command == StateCommand.KP_RESET else max(0.0, self.interface.kp_level + increments[command])
+            )
             return
         if command == StateCommand.START:
             self._handle_start_policy()
         elif command == StateCommand.STOP:
             self._handle_stop_policy()
+        elif command == StateCommand.INIT:
+            self._handle_init_state()
         else:
+            if self.is_wbt:
+                self.native.set_state(self.interface.get_low_state(), tick_ms=self._tick_ms())
             self.native.command(command)
         self._resolve_control_gains()
 
@@ -125,12 +160,35 @@ class NativeRunnerPolicy(BasePolicy):
         state = self.interface.get_low_state()
         command = self.native.step_state(state, tick_ms=self._tick_ms())
         self.cmd_q[:] = command.q
-        order = self.robot_config.motor2joint
-        self.interface.send_low_command(self.cmd_q, np.asarray(command.dq), np.asarray(command.tau),
-                                       state[0, 7:7+self.num_dofs],
-                                       kp_override=np.asarray(command.kp)[order],
-                                       kd_override=np.asarray(command.kd)[order])
+        self.interface.send_low_command(
+            self.cmd_q,
+            np.asarray(command.dq),
+            np.asarray(command.tau),
+            state[0, 7 : 7 + self.num_dofs],
+            kp_override=np.asarray(command.kp),
+            kd_override=np.asarray(command.kd),
+        )
         self._on_command_sent(self.cmd_q, state)
+
+    def close(self):
+        if self._owns_clock and self._clock is not None:
+            self._clock.close()
+            self._clock = None
+        if self._owns_inputs:
+            for provider in {
+                id(self._velocity_input): self._velocity_input,
+                id(self._command_provider): self._command_provider,
+            }.values():
+                stop = getattr(provider, "stop", None)
+                if callable(stop):
+                    stop()
+            self._owns_inputs = False
+
+    def run(self):
+        try:
+            super().run()
+        finally:
+            self.close()
 
 
 class NativeLocomotionRunner(NativeRunnerPolicy):

@@ -1,7 +1,6 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include <yaml-cpp/yaml.h>
 
 #include "holosoma_cpp/holosoma_inference_core.hpp"
 #include "holosoma_cpp/inference_engine.hpp"
@@ -20,7 +19,7 @@ py::array_t<double> array(const std::vector<double>& values) {
   std::copy(values.begin(), values.end(), out.mutable_data());
   return out;
 }
-}
+}  // namespace
 
 PYBIND11_MODULE(_native, m) {
   m.doc() = "Transport-independent native inference; construction never opens a robot interface.";
@@ -32,6 +31,7 @@ PYBIND11_MODULE(_native, m) {
       .def_readwrite("base_lin_vel", &RobotState::base_lin_vel)
       .def_readwrite("base_ang_vel", &RobotState::base_ang_vel)
       .def_readwrite("dof_vel", &RobotState::dof_vel)
+      .def_readwrite("projected_gravity", &RobotState::projected_gravity)
       .def_readwrite("tick_ms", &RobotState::tick_ms);
   py::class_<JointCommand>(m, "JointCommand")
       .def_readonly("q", &JointCommand::q)
@@ -41,21 +41,27 @@ PYBIND11_MODULE(_native, m) {
       .def_readonly("kd", &JointCommand::kd);
   py::class_<InferenceEngine>(m, "InferenceEngine")
       .def(py::init([](const std::string& config, bool autostart) {
-        return std::make_unique<InferenceEngine>(parse_inference_config(YAML::Load(config), ""), autostart);
-      }), py::arg("config"), py::arg("autostart") = true)
-      .def("step", [](InferenceEngine& engine, py::array_t<float, py::array::c_style | py::array::forcecast> obs) {
-        auto values = observation(obs);
-        std::vector<double> result;
-        { py::gil_scoped_release release; result = engine.step(values); }
-        return array(result);
-      })
+             return std::make_unique<InferenceEngine>(config_from_yaml(config), autostart);
+           }),
+           py::arg("config"), py::arg("autostart") = true)
+      .def("step",
+           [](InferenceEngine& engine, py::array_t<float, py::array::c_style | py::array::forcecast> obs) {
+             auto values = observation(obs);
+             std::vector<double> result;
+             {
+               py::gil_scoped_release release;
+               result = engine.step(values);
+             }
+             return array(result);
+           })
       .def("step_state", &InferenceEngine::step_state, py::call_guard<py::gil_scoped_release>())
       .def("set_state", &InferenceEngine::set_state)
-      .def("command", [](InferenceEngine& e, const std::string& name) {
-        auto command = state_command_from_string(name);
-        if (!command) throw py::value_error("Unknown state command: " + name);
-        e.command(*command);
-      })
+      .def("command",
+           [](InferenceEngine& e, const std::string& name) {
+             auto command = state_command_from_string(name);
+             if (!command) throw py::value_error("Unknown state command: " + name);
+             e.command(*command);
+           })
       .def("velocity", [](InferenceEngine& e, double x, double y, double yaw) { e.velocity({x, y, yaw}); })
       .def("update_phase", &InferenceEngine::update_phase)
       .def("reset", &InferenceEngine::reset)
@@ -83,18 +89,31 @@ PYBIND11_MODULE(_native, m) {
       .def_readwrite("lookahead", &live::WbtReferenceSequence::lookahead);
   py::class_<live::WbtPolicy>(m, "LiveWbtPolicy")
       .def(py::init([](const std::string& path, bool use_gpu) {
-        auto policy = std::make_unique<live::WbtPolicy>();
-        if (!policy->Initialize(path, use_gpu)) throw py::value_error("Cannot initialize live WBT checkpoint: " + path);
-        return policy;
-      }), py::arg("model_path"), py::arg("use_gpu") = false)
-      .def("step", [](live::WbtPolicy& p, const live::RobotObservation& obs, const live::WbtReferenceSequence& ref) {
-        std::array<float, live::kActionDim> offsets{};
-        { py::gil_scoped_release release;
-          if (!p.ComputeAction(obs, ref, offsets.data())) throw std::runtime_error("Live WBT inference failed"); }
-        std::vector<double> targets(live::kActionDim);
-        for (int i = 0; i < live::kActionDim; ++i) targets[i] = offsets[i] + p.DefaultDofPos()[i];
-        return array(targets);
-      })
+             auto policy = std::make_unique<live::WbtPolicy>();
+             if (!policy->Initialize(path, use_gpu))
+               throw py::value_error("Cannot initialize live WBT checkpoint: " + path);
+             return policy;
+           }),
+           py::arg("model_path"), py::arg("use_gpu") = false)
+      .def(
+          "step",
+          [](live::WbtPolicy& p, const live::RobotObservation& obs, const live::WbtReferenceSequence& ref,
+             std::optional<double> elapsed_seconds) {
+            if (elapsed_seconds)
+              p.SetElapsedSecondsFn([value = *elapsed_seconds] { return value; });
+            else
+              p.SetElapsedSecondsFn({});
+            std::array<float, live::kActionDim> offsets{};
+            {
+              py::gil_scoped_release release;
+              if (!p.ComputeAction(obs, ref, offsets.data())) throw std::runtime_error("Live WBT inference failed");
+            }
+            std::vector<double> targets(live::kActionDim);
+            for (int i = 0; i < live::kActionDim; ++i) targets[i] = offsets[i] + p.DefaultDofPos()[i];
+            return array(targets);
+          },
+          py::arg("observation"), py::arg("reference"), py::arg("elapsed_seconds") = py::none())
+      .def("set_control_interval", &live::WbtPolicy::SetControlInterval)
       .def("reset", &live::WbtPolicy::Reset)
       .def("reset_heading", &live::WbtPolicy::ResetHeading)
       .def("lookahead_offsets", &live::WbtPolicy::LookaheadSampleOffsets)

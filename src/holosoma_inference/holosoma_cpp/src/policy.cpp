@@ -197,6 +197,8 @@ void BasePolicy::compute_terms(const RobotState& state, TermValues& terms) {
   terms["dof_vel"] = state.dof_vel;
   if (config_.task.debug.force_upright_imu) {
     terms["projected_gravity"] = {0.0, 0.0, -1.0};
+  } else if (state.projected_gravity) {
+    terms["projected_gravity"] = *state.projected_gravity;
   } else {
     const math::Quat q{state.base_quat_wxyz[0], state.base_quat_wxyz[1], state.base_quat_wxyz[2],
                        state.base_quat_wxyz[3]};

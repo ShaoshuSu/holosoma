@@ -28,7 +28,7 @@ def native_config(tmp_path):
         [numpy_helper.from_array(weights, "weights")],
     )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)], ir_version=9)
-    helper.set_model_props(model, {"kp": json.dumps([40.0]*29), "kd": json.dumps([2.0]*29)})
+    helper.set_model_props(model, {"kp": json.dumps([40.0] * 29), "kd": json.dumps([2.0] * 29)})
     path = tmp_path / "policy.onnx"
     onnx.save(model, path)
     return replace(config, task=replace(config.task, model_path=str(path)), secondary=None), width
@@ -43,7 +43,9 @@ def test_packed_observation_uses_native_graph_scaling_and_defaults(native_config
     config, width = native_config
     policy = inference.LocomotionPolicy(config)
     obs = np.arange(width, dtype=np.float32)[None, :]
-    expected = np.minimum(obs[:, :29], 100) * np.float32(config.task.policy_action_scale) + np.asarray(config.robot.default_dof_angles)
+    expected = np.minimum(obs[:, :29], 100) * np.float32(config.task.policy_action_scale) + np.asarray(
+        config.robot.default_dof_angles
+    )
     np.testing.assert_allclose(policy.step(obs), expected, rtol=1e-6, atol=1e-7)
     policy.reset()
     np.testing.assert_allclose(policy.step(obs), expected, rtol=1e-6, atol=1e-7)
@@ -52,7 +54,7 @@ def test_packed_observation_uses_native_graph_scaling_and_defaults(native_config
 def test_native_rejects_invalid_shapes_and_nonfinite_input(native_config):
     config, width = native_config
     policy = inference.get_policy_from_preset(config)
-    for obs in (np.zeros((2, width)), np.zeros((1, width-1)), np.full((1, width), np.nan)):
+    for obs in (np.zeros((2, width)), np.zeros((1, width - 1)), np.full((1, width), np.nan)):
         with pytest.raises(ValueError):
             policy.step(obs)
     with pytest.raises(ValueError):
@@ -77,7 +79,62 @@ def test_state_api_preserves_hold_and_explicit_engagement(native_config):
     np.testing.assert_allclose(policy.step_state(state).q, held.q)
 
 
+def test_state_api_preserves_explicit_corrected_gravity(native_config):
+    config, _ = native_config
+    policy = inference.get_policy_from_preset(config)
+    state = np.zeros((1, 74))
+    state[0, 3] = 1
+    state[0, -3:] = [0.2, -0.1, -0.97]
+    policy.step_state(state)
+    terms = sorted(config.observation.obs_dict["actor_obs"])
+    history = config.observation.history_length_dict.get("actor_obs", 1)
+    start = sum(config.observation.obs_dims[t] * history for t in terms[: terms.index("projected_gravity")])
+    latest = start + (history - 1) * 3
+    np.testing.assert_allclose(policy.last_observation[latest : latest + 3], state[0, -3:], atol=1e-6)
+
+
 def test_preset_lookup_does_not_share_mutable_observation_maps():
     config = inference.get_config("g1-29dof-loco")
     config.observation.obs_dims["native_test_only"] = 9
     assert "native_test_only" not in inference.get_config("g1-29dof-loco").observation.obs_dims
+
+
+def test_python_runner_passes_joint_ordered_gains_to_the_sdk(native_config):
+    from holosoma_inference.policies.native_runner import NativeLocomotionRunner
+
+    config, _ = native_config
+    permutation = tuple(reversed(range(29)))
+    config = replace(
+        config,
+        robot=replace(
+            config.robot,
+            joint2motor=permutation,
+            motor2joint=permutation,
+            motor_kp=tuple(range(10, 39)),
+            motor_kd=tuple(range(1, 30)),
+        ),
+    )
+
+    class Interface:
+        kp_level = kd_level = 1.0
+
+        def get_low_state(self):
+            state = np.zeros((1, 71))
+            state[0, 3] = 1
+            return state
+
+        def send_low_command(self, *args, **kwargs):
+            self.sent = kwargs
+
+    class Input:
+        def poll_velocity(self):
+            return None
+
+        def poll_commands(self):
+            return []
+
+    interface, inputs = Interface(), Input()
+    runner = NativeLocomotionRunner(config, interface=interface, velocity_input=inputs, command_provider=inputs)
+    runner._handle_start_policy()
+    runner.policy_action()
+    np.testing.assert_allclose(interface.sent["kp_override"], np.asarray(config.robot.motor_kp)[list(permutation)])
