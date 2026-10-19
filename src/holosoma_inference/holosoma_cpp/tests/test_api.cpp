@@ -159,6 +159,50 @@ TEST(PolicyApi, RelativePresetModelsAndResearchMotionWorkThroughFrontDoor) {
   }
 }
 
+TEST(PolicyApi, NewClipRequiresResetToMatchItsFreshHeadingAnchor) {
+  const auto config = live_policy_config(model("sonic_flat_0p2s.onnx"));
+  Policy streaming(config), fresh_rotated(config);
+  auto state = robot_state();
+  auto clip_a = reference_window(5);
+  auto clip_b = reference_window(5);
+  const double half_yaw = std::acos(-1.0) / 4.0;
+  clip_b.quat.assign(5, {std::cos(half_yaw), 0, 0, std::sin(half_yaw)});
+  // This fixture's real metadata declares 9 * 93 proprio values, then five
+  // frames each of q and dq, followed by the obs07 relative-orientation block.
+  constexpr size_t orientation = 9 * 93 + 2 * 5 * 29;
+  auto rotation = [&](const Policy& policy) {
+    const auto& obs = policy.policy().last_observation();
+    if (obs.size() != 2267u) throw std::runtime_error("The reference-swap fixture must have 2267 observations");
+    return std::vector<float>(obs.begin() + orientation, obs.begin() + orientation + 30);
+  };
+  auto expect_rotation = [](const std::vector<float>& actual, const std::vector<float>& expected) {
+    ASSERT_EQ(actual.size(), expected.size());
+    for (size_t i = 0; i < actual.size(); ++i) EXPECT_NEAR(actual[i], expected[i], 1e-5) << i;
+  };
+
+  streaming.set_reference(&clip_a);
+  streaming.step(state);
+  const auto a = rotation(streaming);
+  fresh_rotated.set_reference(&clip_b);
+  fresh_rotated.step(state);
+  const auto b = rotation(fresh_rotated);
+  expect_rotation(a, b);  // fresh yaw-0 and yaw-90 clips both start aligned
+  EXPECT_NEAR(b[0], 1, 1e-5);
+  EXPECT_NEAR(b[3], 1, 1e-5);
+
+  streaming.set_reference(&clip_b);
+  streaming.step(state);
+  const auto without_reset = rotation(streaming);
+  EXPECT_NEAR(without_reset[0], 0, 1e-5);
+  EXPECT_NEAR(without_reset[1], -1, 1e-5);
+  EXPECT_NEAR(without_reset[2], 1, 1e-5);
+
+  // The documented clip-transition sequence must match a fresh policy.
+  streaming.reset();
+  streaming.step(state);
+  expect_rotation(rotation(streaming), b);
+}
+
 TEST(PolicyApi, OfflineInterfaceNeverPublishesAndHoldsOnlySuppliedState) {
   OfflineInterface robot;
   RobotState state;

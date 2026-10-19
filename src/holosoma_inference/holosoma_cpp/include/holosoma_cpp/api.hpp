@@ -38,6 +38,8 @@ class Policy {
   Policy& operator=(const Policy&) = delete;
 
   // Borrowed until replaced (nullptr clears it). Research policies reject this.
+  // Replacing the buffer preserves history and heading anchors. When starting
+  // an independent clip with a different heading, call reset() before stepping.
   void set_reference(const ReferenceWindow* window);
   // One tick; the returned command stays valid until the next step/destruction.
   const JointCommand& step(const RobotState& state);
@@ -55,6 +57,8 @@ class Policy {
   void command(StateCommand command);
   void velocity(const VelCmd& command);
   void update_phase();
+  // Start a new episode: clear history/action feedback and reanchor BOTH robot
+  // and reference heading plus motion time on the next step. Keeps the reference.
   void reset();
 
  private:

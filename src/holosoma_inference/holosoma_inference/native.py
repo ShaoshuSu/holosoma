@@ -72,7 +72,7 @@ class NativePolicy:
             self._engine.reset()
 
     def set_reference(self, window):
-        """Use a native ReferenceWindow for actor-only tracking; retain it until replaced."""
+        """Replace the reference buffer without resetting state; call reset() for a new clip."""
         with self._lock:
             self._engine.set_reference(window)
 

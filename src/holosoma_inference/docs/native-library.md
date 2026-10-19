@@ -92,6 +92,16 @@ With no explicit elapsed clock, the live API advances one model timestep per cal
 
 The reference is offset-major, with one quaternion per frame. Window dimensions must match the checkpoint; malformed or non-finite input is rejected before inference. The first future sample is also the current reference unless `ReferenceWindow.current` explicitly supplies a `PolicyReferenceFrame`. The default 0p2s preset uses five offsets, but metadata-complete checkpoints may declare other layouts.
 
+`set_reference` changes the borrowed buffer, not the episode. Replacing a window during continuous streaming preserves heading anchors, history and motion time. When switching to an independent clip with a different starting heading, call `reset()` before the first step with that clip. This clears history/action feedback and recaptures both the robot and reference heading at the new episode's first state; it keeps the supplied reference attached. Pointer identity alone cannot identify a clip boundary because streaming callers may replace buffers every tick.
+
+```python
+policy.set_reference(next_clip_window)
+policy.reset()
+command = policy.step(state)
+```
+
+The equivalent C++ sequence is `policy.set_reference(&next_clip_window); policy.reset(); policy.step(state);`. Merely setting a new pointer intentionally continues using the old heading anchors.
+
 ## C++
 
 ```sh

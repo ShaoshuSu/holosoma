@@ -31,6 +31,7 @@ struct ReferenceWindow {
 class GeneralWBTPolicy : public BasePolicy {
  public:
   GeneralWBTPolicy(InferenceConfig config, PolicyContext& context);
+  // Buffer lifetime only; a new clip/heading needs reset() before inference.
   void set_reference(const ReferenceWindow* window) { reference_ = window; }
   void handle_start_policy() override;
   std::vector<double> infer_observation(const std::vector<float>& obs) override;
