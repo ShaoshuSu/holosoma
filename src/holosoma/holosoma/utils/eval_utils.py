@@ -94,7 +94,7 @@ def load_saved_experiment_config(checkpoint_cfg: CheckpointConfig) -> tuple[Expe
     cached_config_path = get_cached_file_path(config_uri)
 
     with open(cached_config_path) as f:
-        return ExperimentConfig(**yaml.safe_load(f)), wandb_run_path
+        return _restore_experiment_config(yaml.safe_load(f)), wandb_run_path
 
 
 def _load_config_from_checkpoint(checkpoint_path: Path) -> tuple[ExperimentConfig, str | None]:
@@ -102,7 +102,28 @@ def _load_config_from_checkpoint(checkpoint_path: Path) -> tuple[ExperimentConfi
 
     checkpoint_contents = torch.load(checkpoint_path, map_location="cpu")
     config_data = checkpoint_contents["experiment_config"]
-    return ExperimentConfig(**config_data), checkpoint_contents.get("wandb_run_path")
+    return _restore_experiment_config(config_data), checkpoint_contents.get("wandb_run_path")
+
+
+def _restore_experiment_config(config_data: dict[str, Any]) -> ExperimentConfig:
+    """Transition historical saved simulator fields; CLI/YAML inputs keep the current schema."""
+    simulator = config_data.get("simulator", {}).get("config", {})
+    if "mujoco_warp" in simulator:
+        native = simulator["sim"].setdefault("mujoco", {})
+        warp = native.setdefault("warp", {})
+        for name, value in simulator.pop("mujoco_warp").items():
+            if name in warp and warp[name] is not None and value is not None and warp[name] != value:
+                raise ValueError(f"Saved config has conflicting mujoco_warp.{name} and sim.mujoco.warp.{name}")
+            if warp.get(name) is None:
+                warp[name] = value
+    native = simulator.get("sim", {}).get("mujoco", {})
+    gravity = native.pop("gravity", None)
+    if gravity is not None:
+        extra = native.setdefault("extra", {})
+        if "gravity" in extra and extra["gravity"] != gravity:
+            raise ValueError("Saved config has conflicting sim.mujoco.gravity and sim.mujoco.extra.gravity")
+        extra["gravity"] = gravity
+    return ExperimentConfig(**config_data)
 
 
 class CheckpointMetadata(TypedDict):
