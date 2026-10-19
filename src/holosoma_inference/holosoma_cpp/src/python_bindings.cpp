@@ -55,8 +55,18 @@ PYBIND11_MODULE(_native, m) {
              }
              return array(result);
            })
-      .def("step_state", &InferenceEngine::step_state, py::call_guard<py::gil_scoped_release>())
+      .def("step_state", &InferenceEngine::step_state, py::arg("state"), py::arg("advance_phase") = true,
+           py::call_guard<py::gil_scoped_release>())
       .def("set_state", &InferenceEngine::set_state)
+      .def("infer_offsets",
+           [](InferenceEngine& e, const RobotState& state) {
+             std::vector<double> result;
+             {
+               py::gil_scoped_release release;
+               result = e.infer_offsets(state);
+             }
+             return array(result);
+           })
       .def("command",
            [](InferenceEngine& e, const std::string& name) {
              auto command = state_command_from_string(name);

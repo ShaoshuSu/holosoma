@@ -1,8 +1,8 @@
 name: Build Python distribution (reusable)
 
-# Reusable build for the pure-Python packages in this monorepo. Builds an sdist
-# + a py3-none-any wheel for the package at `package-dir` and uploads them as
-# the `dist` artifact for a downstream publish job.
+# Reusable distribution build. Pure-Python packages get a universal wheel;
+# native packages get tested manylinux wheels plus an sdist for source builds.
+# Uploads the `dist` artifact for the caller's publishing job.
 #
 # This is called by the per-package publish-*.yml workflows. The actual PyPI
 # upload (OIDC Trusted Publishing) lives in those callers, not here, so each
@@ -23,6 +23,11 @@ on:
         description: Path to the package directory (holds pyproject.toml/setup.py).
         required: true
         type: string
+      native:
+        description: Build interpreter-specific Linux wheels in a manylinux container.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -35,11 +40,30 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Build sdist + wheel
+        if: ${{ !inputs.native }}
         working-directory: ${{ inputs.package-dir }}
         run: |
           set -euo pipefail
           echo "Building ${{ inputs.package-dir }} with uv $(uv --version)"
           uv build --out-dir dist
+
+      - name: Build native source distribution
+        if: ${{ inputs.native }}
+        working-directory: ${{ inputs.package-dir }}
+        run: uv build --sdist --out-dir dist
+
+      - name: Build and test portable native wheels
+        if: ${{ inputs.native }}
+        env:
+          PACKAGE_DIR: ${{ inputs.package-dir }}
+          CIBW_BUILD: 'cp38-manylinux_x86_64 cp39-manylinux_x86_64 cp310-manylinux_x86_64 cp311-manylinux_x86_64 cp312-manylinux_x86_64 cp313-manylinux_x86_64'
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          CIBW_BUILD_FRONTEND: 'build[uv]'
+          CIBW_TEST_COMMAND: >-
+            python -c "import numpy as np; import holosoma_inference as h;
+            p = h.get_policy_from_preset('g1-29dof-loco');
+            assert p.step(np.zeros((1,100))).shape == (1,29)"
+        run: uvx --from cibuildwheel==2.23.3 cibuildwheel "$PACKAGE_DIR" --output-dir "$PACKAGE_DIR/dist"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

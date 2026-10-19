@@ -11,10 +11,19 @@ from holosoma_inference.native import (
     get_policy_from_preset,
 )
 
-__all__ = ["InferenceConfig", "LocomotionPolicy", "WholeBodyTrackingPolicy", "get_config", "get_policy_from_preset"]
+__all__ = [
+    "InferenceConfig",
+    "LiveRobotObservation",
+    "LiveWbtPolicy",
+    "LocomotionPolicy",
+    "ReferenceFrame",
+    "ReferenceSequence",
+    "WholeBodyTrackingPolicy",
+    "get_config",
+    "get_policy_from_preset",
+]
 
 _LIVE_TYPES = {"LiveWbtPolicy", "LiveRobotObservation", "ReferenceFrame", "ReferenceSequence"}
-__all__ += sorted(_LIVE_TYPES)
 
 
 def __getattr__(name):

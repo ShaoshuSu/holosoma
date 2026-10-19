@@ -3,4 +3,4 @@
 from holosoma_inference.policies.native_runner import NativeWbtRunner as WholeBodyTrackingPolicy
 from holosoma_inference.policies.wbt_utils import PinocchioRobot
 
-__all__ = ["WholeBodyTrackingPolicy", "PinocchioRobot"]
+__all__ = ["PinocchioRobot", "WholeBodyTrackingPolicy"]

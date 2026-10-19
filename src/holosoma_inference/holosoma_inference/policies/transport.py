@@ -46,12 +46,21 @@ class RunnerTransport:
         task = self.config.task
         sources = {task.velocity_input, task.state_input}
         self.use_joystick = bool({"interface", "joystick"} & sources)
+        self._create_input_providers()
+
+    def _setup_keyboard_listener(self):
+        task = self.config.task
+        sources = {task.velocity_input, task.state_input}
         if "keyboard" in sources:
             from holosoma_inference.inputs.impl.keyboard import get_keyboard_listener
 
             self.use_keyboard = get_keyboard_listener().start()
             if not self.use_keyboard:
                 self.use_policy_action = True
+
+    def _create_input_providers(self):
+        self._setup_keyboard_listener()
+        task = self.config.task
         self._velocity_input = create_input(self, task.velocity_input, "velocity")
         self._command_provider = (
             self._velocity_input

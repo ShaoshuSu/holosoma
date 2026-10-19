@@ -5,24 +5,29 @@ from __future__ import annotations
 import copy
 import json
 import threading
-from dataclasses import asdict, replace
+from dataclasses import asdict, fields, replace
 
 import numpy as np
 
 from holosoma_inference.config.config_types.inference import InferenceConfig
+from holosoma_inference.config.config_types.robot import RobotConfig
 
 
 def get_config(name: str) -> InferenceConfig:
     """Return an independent registered preset, including extension presets."""
     from holosoma_inference.config.config_values.inference import INFERENCE_REGISTRY
-    from holosoma_inference.utils.config_registry import load_entrypoint_presets
+    from holosoma_inference.utils.config_registry import load_plugins
 
-    load_entrypoint_presets(INFERENCE_REGISTRY)
+    load_plugins()
     return copy.deepcopy(INFERENCE_REGISTRY[name[len("inference:") :] if name.startswith("inference:") else name])
 
 
 def _native_config(config: InferenceConfig, *, use_gpu=False) -> str:
     document = asdict(config)
+    # Robot subclasses can carry SDK transport settings. The original config
+    # remains available to the transport owner; only the common robot contract
+    # crosses the native inference boundary.
+    document["robot"] = {field.name: document["robot"][field.name] for field in fields(RobotConfig)}
     # These transports are serviced by the Python runner, not by the native
     # standalone executable. Preserve the original dataclass for those callers.
     document["secondary"] = None
@@ -53,11 +58,12 @@ class NativePolicy:
             paths = [paths]
         resolved = []
         for path in paths or []:
-            if str(path).startswith(("wandb://", "https://")):
+            resolved_path = str(path)
+            if resolved_path.startswith(("wandb://", "https://")):
                 from holosoma_inference.utils.wandb import load_checkpoint
 
-                path = load_checkpoint(None, str(path))
-            resolved.append(str(path))
+                resolved_path = str(load_checkpoint(None, resolved_path))
+            resolved.append(resolved_path)
         native_config = replace(config, task=replace(config.task, model_path=resolved))
         self._engine = _native.InferenceEngine(_native_config(native_config, use_gpu=use_gpu), autostart)
 
@@ -91,13 +97,18 @@ class NativePolicy:
         state.tick_ms = tick_ms
         return state
 
-    def step_state(self, state, *, tick_ms=0):
+    def step_state(self, state, *, tick_ms=0, advance_phase=True):
         with self._lock:
-            return self._engine.step_state(self._state(state, tick_ms))
+            return self._engine.step_state(self._state(state, tick_ms), advance_phase)
 
     def set_state(self, state, *, tick_ms=0):
         with self._lock:
             self._engine.set_state(self._state(state, tick_ms))
+
+    def infer_offsets(self, state, *, tick_ms=0):
+        """Warm/evaluate native inference without engagement or command publication."""
+        with self._lock:
+            return self._engine.infer_offsets(self._state(state, tick_ms))
 
     def command(self, command):
         with self._lock:

@@ -52,6 +52,8 @@ class BasePolicy {
   void initialize();
   // Packed actor observation to scaled joint offsets, with no motor I/O.
   virtual std::vector<double> infer_observation(const std::vector<float>& obs);
+  // Evaluate and warm model/history without publishing or changing engagement.
+  std::vector<double> infer_offsets(const RobotState& state) { return rl_inference(state); }
   void reset();
 
   // ---- loop hooks (BasePolicy.run) ----

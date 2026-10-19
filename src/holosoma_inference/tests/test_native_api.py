@@ -10,8 +10,10 @@ import numpy as np
 import onnx
 import pytest
 from onnx import TensorProto, helper, numpy_helper
+from pydantic.dataclasses import dataclass
 
 import holosoma_inference as inference
+from holosoma_inference.config.config_types.robot import RobotConfig
 
 
 @pytest.fixture
@@ -36,7 +38,11 @@ def native_config(tmp_path):
 
 
 def test_library_import_has_no_robot_side_effects():
-    code = "import sys; import holosoma_inference; from holosoma_inference import _native; assert not any(n in sys.modules for n in ('unitree_interface','rclpy','pinocchio','holosoma_inference.sdk'))"
+    code = (
+        "import sys; import holosoma_inference; from holosoma_inference import _native; "
+        "assert not any(n in sys.modules for n in "
+        "('unitree_interface','rclpy','pinocchio','holosoma_inference.sdk'))"
+    )
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
@@ -56,9 +62,9 @@ def test_native_rejects_invalid_shapes_and_nonfinite_input(native_config):
     config, width = native_config
     policy = inference.get_policy_from_preset(config)
     for obs in (np.zeros((2, width)), np.zeros((1, width - 1)), np.full((1, width), np.nan)):
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match="observation"):
             policy.step(obs)
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="orientation"):
         policy.step_state(np.zeros((1, 71)))  # invalid all-zero orientation
     assert np.isfinite(policy.step(np.zeros((1, width)))).all()
 
@@ -94,10 +100,43 @@ def test_state_api_preserves_explicit_corrected_gravity(native_config):
     np.testing.assert_allclose(policy.last_observation[latest : latest + 3], state[0, -3:], atol=1e-6)
 
 
+def test_state_api_advances_locomotion_phase_once_per_tick(native_config):
+    config, _ = native_config
+    config = replace(config, task=replace(config.task, auto_walk_on_vel_cmd=True, use_phase=True))
+    policy = inference.get_policy_from_preset(config)
+    state = np.zeros((1, 71))
+    state[0, 3] = 1
+    policy.velocity(0.2, 0.0, 0.0)
+    policy.step_state(state)
+    first = policy.last_observation.copy()
+    policy.step_state(state)
+    second = policy.last_observation.copy()
+    terms = sorted(config.observation.obs_dict["actor_obs"])
+    start = sum(config.observation.obs_dims[t] for t in terms[: terms.index("sin_phase")])
+    dt = 2 * np.pi / (config.task.rl_rate * config.task.gait_period)
+    np.testing.assert_allclose(first[start : start + 2], [np.sin(dt), -np.sin(dt)], atol=1e-6)
+    np.testing.assert_allclose(second[start : start + 2], [np.sin(2 * dt), -np.sin(2 * dt)], atol=1e-6)
+
+
 def test_preset_lookup_does_not_share_mutable_observation_maps():
     config = inference.get_config("g1-29dof-loco")
     config.observation.obs_dims["native_test_only"] = 9
     assert "native_test_only" not in inference.get_config("g1-29dof-loco").observation.obs_dims
+
+
+def test_library_accepts_robot_config_with_host_transport_fields(native_config):
+    from dataclasses import asdict
+
+    @dataclass(frozen=True)
+    class TransportRobot(RobotConfig):
+        command_topic: str = "/example/commands"
+
+    config, width = native_config
+    robot = TransportRobot(**asdict(config.robot))
+    config = replace(config, robot=robot)
+    policy = inference.get_policy_from_preset(config)
+    assert policy.config.robot.command_topic == "/example/commands"
+    assert np.isfinite(policy.step(np.zeros((1, width)))).all()
 
 
 def test_embedded_motion_resumes_progress_after_a_library_reset():
@@ -171,3 +210,32 @@ def test_python_runner_passes_joint_ordered_gains_to_the_sdk(native_config):
     runner._handle_start_policy()
     runner.policy_action()
     np.testing.assert_allclose(interface.sent["kp_override"], np.asarray(config.robot.motor_kp)[list(permutation)])
+
+
+def test_injected_runner_can_warm_up_without_publishing_or_engaging(native_config):
+    from holosoma_inference.policies.native_runner import NativeLocomotionRunner
+
+    config, width = native_config
+
+    class Interface:
+        def get_low_state(self):
+            state = np.zeros((1, 71))
+            state[0, 3] = 1
+            return state
+
+        def send_low_command(self, *_args, **_kwargs):
+            pytest.fail("warm-up published a command")
+
+    class Input:
+        def poll_velocity(self):
+            return None
+
+        def poll_commands(self):
+            return []
+
+    interface, provider = Interface(), Input()
+    runner = NativeLocomotionRunner(config, interface=interface, velocity_input=provider, command_provider=provider)
+    result = runner.rl_inference(interface.get_low_state())
+    assert result.shape == (1, 29) and np.isfinite(result).all()
+    assert runner.native.last_observation.size == width
+    assert not runner.use_policy_action

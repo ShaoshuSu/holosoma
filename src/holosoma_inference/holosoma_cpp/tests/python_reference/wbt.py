@@ -11,7 +11,6 @@ from loguru import logger
 from termcolor import colored
 
 from holosoma_inference.config.config_types.inference import InferenceConfig
-from .base import BasePolicy
 from holosoma_inference.policies.wbt_utils import MotionClockUtil, PinocchioRobot, TimestepUtil
 from holosoma_inference.utils.clock import ClockSub
 from holosoma_inference.utils.math.quat import (
@@ -23,6 +22,8 @@ from holosoma_inference.utils.math.quat import (
     wxyz_to_xyzw,
     xyzw_to_wxyz,
 )
+
+from .base import BasePolicy
 
 
 @runtime_checkable

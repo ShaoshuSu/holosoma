@@ -305,6 +305,7 @@ def run_scenario(spec: dict) -> dict:
     from python_reference import base as base_module
     from python_reference.locomotion import LocomotionPolicy
     from python_reference.wbt import WholeBodyTrackingPolicy
+
     from holosoma_inference.inputs.impl.interface import InterfaceInput
     from holosoma_inference.inputs.impl.keyboard import KEYBOARD_VELOCITY_LOCOMOTION, KeyboardInput
     from holosoma_inference.policies.dual_mode import DualModePolicy

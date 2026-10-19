@@ -67,6 +67,7 @@ wheel.exclude = ["**/tests/**", "**/__pycache__/**"]
 sdist.include = ["holosoma_cpp/**", "holosoma_inference/**"]
 
 [tool.scikit-build.cmake.define]
+CMAKE_INSTALL_LIBDIR = "holosoma_inference/lib"
 HOLOSOMA_BUILD_PYTHON = "ON"
 HOLOSOMA_BUILD_RUNNER = "OFF"
 HOLOSOMA_BUILD_TESTS = "OFF"

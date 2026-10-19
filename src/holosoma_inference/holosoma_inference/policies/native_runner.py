@@ -158,7 +158,7 @@ class NativeRunnerPolicy(RunnerTransport):
 
     def policy_action(self):
         state = self.interface.get_low_state()
-        command = self.native.step_state(state, tick_ms=self._tick_ms())
+        command = self.native.step_state(state, tick_ms=self._tick_ms(), advance_phase=False)
         self.cmd_q[:] = command.q
         self.interface.send_low_command(
             self.cmd_q,
@@ -169,6 +169,10 @@ class NativeRunnerPolicy(RunnerTransport):
             kd_override=np.asarray(command.kd),
         )
         self._on_command_sent(self.cmd_q, state)
+
+    def rl_inference(self, robot_state_data):
+        """Compatibility warm-up hook: compute offsets, publish nothing."""
+        return self.native.infer_offsets(robot_state_data, tick_ms=self._tick_ms())
 
     def close(self):
         if self._owns_clock and self._clock is not None:

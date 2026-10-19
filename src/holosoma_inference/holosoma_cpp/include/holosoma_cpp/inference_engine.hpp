@@ -14,7 +14,8 @@ class InferenceEngine {
   InferenceEngine& operator=(const InferenceEngine&) = delete;
 
   std::vector<double> step(const std::vector<float>& actor_observation);
-  JointCommand step_state(const RobotState& state);
+  std::vector<double> infer_offsets(const RobotState& state);
+  JointCommand step_state(const RobotState& state, bool advance_phase = true);
   void set_state(const RobotState& state);
   void command(StateCommand command);
   void velocity(const VelCmd& command);

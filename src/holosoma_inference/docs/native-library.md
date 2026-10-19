@@ -35,7 +35,9 @@ targets = policy.step(np.zeros((1, width), dtype=np.float32))
 ```
 
 `get_config` returns an independent copy and includes registered extension
-presets. `InferenceConfig` and `LocomotionPolicy(config)` are also exported for
+presets. SDK-specific fields on robot-config subclasses remain available to the
+Python transport owner; the native engine receives the common robot contract.
+`InferenceConfig` and `LocomotionPolicy(config)` are also exported for
 composition without a named preset. Model paths may be local or supported W&B
 URLs, resolved before native construction. Packed observations must have shape
 `(N,)` or `(1, N)` and contain finite values. The returned `(1, num_joints)` array
@@ -49,6 +51,9 @@ base_ang_vel(3), joint_vel(N)]`, optionally followed by corrected gravity (3).
 It returns a command with `q`, `dq`, `tau`, `kp` and `kd`. Start with
 `autostart=False` for explicit `policy.command("START")` / `"STOP"` / `"INIT"`
 control. `velocity(x, y, yaw)` supplies a locomotion request.
+`step_state` advances the gait phase once per call; an external loop that already
+advances it passes `advance_phase=False`. `infer_offsets(state)` warms the native
+model and history without changing engagement or publishing a command.
 
 ## Live-reference whole-body tracking
 
@@ -56,6 +61,10 @@ Embedded-motion policies read their reference outputs from the model. A
 live-reference policy instead receives reference frames from its caller and
 derives its observation layout from ONNX `experiment_config` metadata. These
 contracts remain explicit; neither guesses the other's layout from its width.
+
+SONIC-aligned layout names refer to NVIDIA's public
+[GEAR-SONIC model family](https://github.com/NVlabs/GR00T-WholeBodyControl).
+The parser retains the corresponding exporter metadata keys for compatibility.
 
 ```python
 from holosoma_inference import (
@@ -106,6 +115,10 @@ supports explicit `interface`, `velocity_input`, `command_provider` and
 it out. SDK command overrides remain in joint order; the SDK owns motor
 permutation. A configured simulation clock continues to use the Python clock
 subscriber, while the C++ engine owns timestep conversion.
+
+For editable development, reinstall after changing C++ source. Container
+dependency stages compile that source before the final Python-source overlay,
+so a Python-only edit can reuse the native build and a C++ edit invalidates it.
 
 The former Python policy implementations are retained only under
 `holosoma_cpp/tests/python_reference` as independent replay oracles. They are

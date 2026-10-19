@@ -89,13 +89,19 @@ void InferenceEngine::set_state(const RobotState& state) {
   impl_->robot.state = state;
   impl_->robot.have_state = true;
 }
-JointCommand InferenceEngine::step_state(const RobotState& state) {
+
+std::vector<double> InferenceEngine::infer_offsets(const RobotState& state) {
+  set_state(state);
+  return impl_->policy->infer_offsets(state);
+}
+JointCommand InferenceEngine::step_state(const RobotState& state, bool advance_phase) {
   set_state(state);
   if (impl_->pending_engagement) {
     impl_->policy->handle_start_policy();
     if (impl_->policy->config().is_wbt()) impl_->policy->dispatch_command(StateCommand::START_MOTION_CLIP);
     impl_->pending_engagement = false;
   }
+  if (advance_phase) update_phase();
   impl_->policy->policy_action(state);
   return impl_->robot.command;
 }

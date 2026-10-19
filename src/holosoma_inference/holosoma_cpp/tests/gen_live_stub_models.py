@@ -11,7 +11,6 @@ import numpy as np
 import onnx
 from onnx import TensorProto, helper, numpy_helper
 
-
 DOF_NAMES = (
     "left_hip_pitch_joint",
     "left_hip_roll_joint",
