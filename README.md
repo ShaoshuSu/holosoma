@@ -4,7 +4,7 @@ Holosoma (Greek: "whole-body") is a comprehensive humanoid robotics framework fo
 
 ## Features
 
-- **Multi-simulator support**: IsaacSim, MuJoCo Warp (MJWarp), and MuJoCo (inference only)
+- **Multi-simulator support**: IsaacGym (no longer supported), IsaacSim, MuJoCo Warp (MJWarp), and MuJoCo (inference only)
 - **Multiple RL algorithms**: PPO and FastSAC
 - **Robot support**: Unitree G1 and Booster T1 humanoids
 - **Task types**: Locomotion (velocity tracking) and whole-body tracking
@@ -118,6 +118,32 @@ Watch real-world deployments of Holosoma policies *(click thumbnails to play)*
   </tr>
 </table>
 
+
+## Legacy Isaac Gym
+
+> **NVIDIA Isaac Gym is no longer supported in this version.**
+>
+> For existing Isaac Gym workflows, use the pre-removal version and its [original README][isaacgym-readme]. A release tag for the final compatible version is planned.
+>
+> **Supported simulators:** NVIDIA Isaac Sim, MuJoCo Warp, and MuJoCo.
+
+Use a separate checkout of the complete pre-removal version so the backend,
+setup scripts, dependency constraints, and documentation stay together.
+Until the release tag is published, use the preserved revision `8b83d915`:
+
+```bash
+git clone https://github.com/amazon-far/holosoma.git holosoma-isaacgym
+cd holosoma-isaacgym
+git checkout --detach 8b83d915a7cd4e148c7049d8d0d4bfcaa1482808
+bash scripts/setup_isaacgym.sh
+source scripts/source_isaacgym_setup.sh
+```
+
+Follow that version's [original README][isaacgym-readme] and
+[training guide][isaacgym-training] for Isaac Gym training and evaluation.
+
+[isaacgym-readme]: https://github.com/amazon-far/holosoma/blob/8b83d915a7cd4e148c7049d8d0d4bfcaa1482808/README.md
+[isaacgym-training]: https://github.com/amazon-far/holosoma/blob/8b83d915a7cd4e148c7049d8d0d4bfcaa1482808/src/holosoma/README.md
 
 ## Issue Reporting
 
