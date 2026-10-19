@@ -1,5 +1,7 @@
 """Native editable installs need implementation source in the dependency stage."""
 
+import ast
+import importlib.util
 import shlex
 from pathlib import Path
 
@@ -30,3 +32,34 @@ def test_every_native_install_has_cmake_sources_in_its_stage(filename, install_m
             installs += 1
             assert copied_native, f"{filename}: native install precedes its CMake source COPY"
     assert installs == expected_installs, "fixture must cover every editable native install"
+
+
+def test_cpp_image_provisions_the_fixture_generator_before_configuring():
+    cpp = ROOT / "src/holosoma_inference/holosoma_cpp"
+    instructions = (cpp / "docker/Dockerfile.test").read_text().replace("\\\n", " ").splitlines()
+    before_cmake = []
+    for instruction in instructions:
+        if instruction.startswith("RUN cmake "):
+            break
+        if instruction.startswith("RUN "):
+            before_cmake.append(shlex.split(instruction[4:]))
+    else:
+        pytest.fail("C++ test image must configure the native tests")
+    assert any("apt-get" in words and "install" in words and "python3" in words for words in before_cmake)
+    # Derive dependencies from the executed generator rather than keeping a
+    # second package list that can silently drift when the generator changes.
+    tree = ast.parse((cpp / "tests/gen_live_stub_models.py").read_text())
+    imports = {
+        alias.name.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names
+    }
+    imports.update(node.module.split(".")[0] for node in ast.walk(tree) if isinstance(node, ast.ImportFrom))
+    required = set()
+    for name in imports:
+        spec = importlib.util.find_spec(name)
+        if spec is None or {"site-packages", "dist-packages"}.intersection(Path(spec.origin or "").parts):
+            required.add(name)
+    assert required, "fixture generator must exercise third-party dependencies"
+    installed = {
+        word.split("==")[0] for words in before_cmake if "pip" in words and "install" in words for word in words
+    }
+    assert required <= installed
