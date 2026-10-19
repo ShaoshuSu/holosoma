@@ -239,3 +239,37 @@ def test_injected_runner_can_warm_up_without_publishing_or_engaging(native_confi
     assert result.shape == (1, 29) and np.isfinite(result).all()
     assert runner.native.last_observation.size == width
     assert not runner.use_policy_action
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [({"q": [np.nan] * 29}, "finite"), ({"q": [0.0]}, "finite"), ({"kp": [-1.0] * 29}, "nonnegative")],
+)
+def test_invalid_robot_output_transform_never_reaches_transport(native_config, override, message):
+    from holosoma_inference.policies.native_runner import NativeLocomotionRunner
+
+    class Runner(NativeLocomotionRunner):
+        def transform_command(self, _command, _state):
+            return override
+
+    class Interface:
+        def get_low_state(self):
+            state = np.zeros((1, 71))
+            state[0, 3] = 1
+            return state
+
+        def send_low_command(self, *_args, **_kwargs):
+            pytest.fail("invalid transformed command reached the SDK")
+
+    class Inputs:
+        def poll_velocity(self):
+            return None
+
+        def poll_commands(self):
+            return []
+
+    config, _ = native_config
+    inputs = Inputs()
+    runner = Runner(config, interface=Interface(), velocity_input=inputs, command_provider=inputs)
+    with pytest.raises(ValueError, match=message):
+        runner.policy_action()

@@ -128,6 +128,11 @@ class NativePolicy:
         with self._lock:
             return self._engine.motion_timestep
 
+    @property
+    def initial_motion(self):
+        with self._lock:
+            return self._engine.initial_motion
+
 
 class LocomotionPolicy(NativePolicy):
     """Configurable native locomotion inference without a hardware interface."""

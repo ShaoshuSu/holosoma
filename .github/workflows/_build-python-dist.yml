@@ -63,7 +63,7 @@ jobs:
             python -c "import numpy as np; import holosoma_inference as h;
             p = h.get_policy_from_preset('g1-29dof-loco');
             assert p.step(np.zeros((1,100))).shape == (1,29)"
-        run: uvx --from cibuildwheel==2.23.3 cibuildwheel "$PACKAGE_DIR" --output-dir "$PACKAGE_DIR/dist"
+        run: uvx --with bashlex==0.18 --from cibuildwheel==2.23.3 cibuildwheel "$PACKAGE_DIR" --output-dir "$PACKAGE_DIR/dist"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

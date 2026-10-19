@@ -116,6 +116,13 @@ it out. SDK command overrides remain in joint order; the SDK owns motor
 permutation. A configured simulation clock continues to use the Python clock
 subscriber, while the C++ engine owns timestep conversion.
 
+Robot-specific adapters can override `transform_command(command, state)` to
+adjust final joint-order targets or gains, for example a smooth startup hold,
+without reimplementing inference. Invalid shapes, non-finite values and negative
+gains are rejected before transmission. Embedded-motion policies expose
+`initial_motion` for such initialization, and adapters receive a model-switch
+hook after the native model changes.
+
 For editable development, reinstall after changing C++ source. Container
 dependency stages compile that source before the final Python-source overlay,
 so a Python-only edit can reuse the native build and a C++ edit invalidates it.

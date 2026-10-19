@@ -18,6 +18,9 @@ class RunnerTransport:
         self.robot_config = config
         self.num_dofs = config.num_joints
         self.default_dof_angles = np.asarray(config.default_dof_angles)
+        self.joint_offsets = (
+            np.deg2rad(config.joint_offsets_deg) if config.joint_offsets_deg is not None else np.zeros(self.num_dofs)
+        )
         self.dof_names = config.dof_names
 
     def _init_sdk_components(self):

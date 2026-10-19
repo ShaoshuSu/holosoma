@@ -128,6 +128,7 @@ class NativeRunnerPolicy(RunnerTransport):
                 1.0 if command == StateCommand.KP_RESET else max(0.0, self.interface.kp_level + increments[command])
             )
             return
+        previous_index = self.active_policy_index
         if command == StateCommand.START:
             self._handle_start_policy()
         elif command == StateCommand.STOP:
@@ -139,6 +140,11 @@ class NativeRunnerPolicy(RunnerTransport):
                 self.native.set_state(self.interface.get_low_state(), tick_ms=self._tick_ms())
             self.native.command(command)
         self._resolve_control_gains()
+        if self.active_policy_index != previous_index:
+            self._on_policy_switched(self.active_model_path)
+
+    def _on_policy_switched(self, model_path):
+        """Observe a native model switch without replacing inference."""
 
     def _handle_start_policy(self):
         self.native.set_state(self.interface.get_low_state(), tick_ms=self._tick_ms())
@@ -159,16 +165,32 @@ class NativeRunnerPolicy(RunnerTransport):
     def policy_action(self):
         state = self.interface.get_low_state()
         command = self.native.step_state(state, tick_ms=self._tick_ms(), advance_phase=False)
-        self.cmd_q[:] = command.q
+        transformed = self.transform_command(command, state) or {}
+        q = np.asarray(transformed.get("q", command.q), dtype=float).reshape(-1)
+        kp = np.asarray(transformed.get("kp", command.kp), dtype=float).reshape(-1)
+        kd = np.asarray(transformed.get("kd", command.kd), dtype=float).reshape(-1)
+        if any(value.shape != (self.num_dofs,) or not np.isfinite(value).all() for value in (q, kp, kd)):
+            raise ValueError("Command transform must return finite joint-ordered q/kp/kd arrays")
+        if (kp < 0).any() or (kd < 0).any():
+            raise ValueError("Command transform gains must be nonnegative")
+        self.cmd_q[:] = q
         self.interface.send_low_command(
             self.cmd_q,
             np.asarray(command.dq),
             np.asarray(command.tau),
             state[0, 7 : 7 + self.num_dofs],
-            kp_override=np.asarray(command.kp),
-            kd_override=np.asarray(command.kd),
+            kp_override=kp,
+            kd_override=kd,
         )
         self._on_command_sent(self.cmd_q, state)
+
+    def transform_command(self, command, robot_state_data):
+        """Optional robot-specific output adaptation; inference remains native.
+
+        Return overrides for final, calibrated joint-order q/kp/kd, or None.
+        The SDK still owns motor permutation and transmission.
+        """
+        return
 
     def rl_inference(self, robot_state_data):
         """Compatibility warm-up hook: compute offsets, publish nothing."""

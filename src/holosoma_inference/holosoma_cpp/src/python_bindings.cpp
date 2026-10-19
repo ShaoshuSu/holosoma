@@ -84,6 +84,13 @@ PYBIND11_MODULE(_native, m) {
                                const auto* wbt = dynamic_cast<const WholeBodyTrackingPolicy*>(&e.policy());
                                return wbt ? std::optional<int>(wbt->motion_timestep()) : std::nullopt;
                              })
+      .def_property_readonly("initial_motion",
+                             [](const InferenceEngine& e) {
+                               const auto* wbt = dynamic_cast<const WholeBodyTrackingPolicy*>(&e.policy());
+                               if (!wbt)
+                                 throw py::value_error("Only embedded-motion WBT has an initial motion reference");
+                               return array(wbt->initial_motion());
+                             })
       .def_property_readonly("last_observation", [](const InferenceEngine& e) { return e.policy().last_observation(); })
       .def_property_readonly("joint_kp", [](const InferenceEngine& e) { return e.policy().joint_kp(); })
       .def_property_readonly("joint_kd", [](const InferenceEngine& e) { return e.policy().joint_kd(); });
