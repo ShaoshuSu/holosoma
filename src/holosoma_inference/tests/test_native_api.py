@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 from dataclasses import replace
+from importlib.resources import files
 
 import numpy as np
 import onnx
@@ -97,6 +98,38 @@ def test_preset_lookup_does_not_share_mutable_observation_maps():
     config = inference.get_config("g1-29dof-loco")
     config.observation.obs_dims["native_test_only"] = 9
     assert "native_test_only" not in inference.get_config("g1-29dof-loco").observation.obs_dims
+
+
+def test_embedded_motion_resumes_progress_after_a_library_reset():
+    config = inference.get_config("g1-29dof-wbt")
+    path = files("holosoma_inference").joinpath("models/wbt/fastsac_g1_29dof_dancing.onnx")
+    config = replace(config, task=replace(config.task, model_path=str(path), use_sim_time=False), secondary=None)
+    policy = inference.get_policy_from_preset(config)
+    state = np.zeros((1, 71))
+    state[0, 3] = 1
+    state[0, 7:36] = config.robot.default_dof_angles
+    policy.step_state(state)
+    policy.step_state(state)
+    assert policy.motion_timestep == 2
+    policy.reset()
+    policy.step_state(state)
+    policy.step_state(state)
+    assert policy.motion_timestep == 2
+
+
+def test_library_autostart_captures_the_first_robot_heading():
+    config = inference.get_config("g1-29dof-wbt")
+    path = files("holosoma_inference").joinpath("models/wbt/fastsac_g1_29dof_dancing.onnx")
+    config = replace(config, task=replace(config.task, model_path=str(path), use_sim_time=False), secondary=None)
+    observations = []
+    for yaw in (0.0, 1.0):
+        policy = inference.get_policy_from_preset(config)
+        state = np.zeros((1, 71))
+        state[0, 3:7] = [np.cos(yaw / 2), 0, 0, np.sin(yaw / 2)]
+        state[0, 7:36] = config.robot.default_dof_angles
+        policy.step_state(state)
+        observations.append(policy.last_observation)
+    np.testing.assert_allclose(observations[0], observations[1], atol=2e-5)
 
 
 def test_python_runner_passes_joint_ordered_gains_to_the_sdk(native_config):

@@ -4,6 +4,7 @@
 
 #include "holosoma_cpp/holosoma_inference_core.hpp"
 #include "holosoma_cpp/inference_engine.hpp"
+#include "holosoma_cpp/wbt_policy.hpp"
 
 namespace py = pybind11;
 using namespace holosoma;
@@ -68,6 +69,11 @@ PYBIND11_MODULE(_native, m) {
       .def_property_readonly("active", [](const InferenceEngine& e) { return e.policy().use_policy_action(); })
       .def_property_readonly("ready", [](const InferenceEngine& e) { return e.policy().get_ready_state(); })
       .def_property_readonly("active_index", [](const InferenceEngine& e) { return e.policy().active_index(); })
+      .def_property_readonly("motion_timestep",
+                             [](const InferenceEngine& e) -> std::optional<int> {
+                               const auto* wbt = dynamic_cast<const WholeBodyTrackingPolicy*>(&e.policy());
+                               return wbt ? std::optional<int>(wbt->motion_timestep()) : std::nullopt;
+                             })
       .def_property_readonly("last_observation", [](const InferenceEngine& e) { return e.policy().last_observation(); })
       .def_property_readonly("joint_kp", [](const InferenceEngine& e) { return e.policy().joint_kp(); })
       .def_property_readonly("joint_kd", [](const InferenceEngine& e) { return e.policy().joint_kd(); });

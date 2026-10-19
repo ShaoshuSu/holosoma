@@ -112,6 +112,11 @@ class NativePolicy:
         with self._lock:
             return np.asarray(self._engine.last_observation, dtype=np.float32)
 
+    @property
+    def motion_timestep(self):
+        with self._lock:
+            return self._engine.motion_timestep
+
 
 class LocomotionPolicy(NativePolicy):
     """Configurable native locomotion inference without a hardware interface."""

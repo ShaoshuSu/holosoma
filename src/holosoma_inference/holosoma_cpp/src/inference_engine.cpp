@@ -33,6 +33,8 @@ struct InferenceEngine::Impl {
   MemoryVelocity velocity;
   PolicyContext context;
   std::unique_ptr<BasePolicy> policy;
+  bool autostart = false;
+  bool pending_engagement = false;
 };
 
 InferenceEngine::InferenceEngine(InferenceConfig config, bool autostart) : impl_(std::make_unique<Impl>()) {
@@ -44,6 +46,8 @@ InferenceEngine::InferenceEngine(InferenceConfig config, bool autostart) : impl_
   else
     impl_->policy = std::make_unique<LocomotionPolicy>(config, impl_->context);
   impl_->policy->initialize();
+  impl_->autostart = autostart;
+  impl_->pending_engagement = autostart;
   if (autostart) {
     impl_->policy->force_policy_active();
     if (config.is_wbt()) impl_->policy->dispatch_command(StateCommand::START_MOTION_CLIP);
@@ -87,14 +91,30 @@ void InferenceEngine::set_state(const RobotState& state) {
 }
 JointCommand InferenceEngine::step_state(const RobotState& state) {
   set_state(state);
+  if (impl_->pending_engagement) {
+    impl_->policy->handle_start_policy();
+    if (impl_->policy->config().is_wbt()) impl_->policy->dispatch_command(StateCommand::START_MOTION_CLIP);
+    impl_->pending_engagement = false;
+  }
   impl_->policy->policy_action(state);
   return impl_->robot.command;
 }
-void InferenceEngine::command(StateCommand cmd) { impl_->policy->dispatch_command(cmd); }
+void InferenceEngine::command(StateCommand cmd) {
+  if (cmd == StateCommand::START || cmd == StateCommand::STOP || cmd == StateCommand::INIT)
+    impl_->pending_engagement = false;
+  impl_->policy->dispatch_command(cmd);
+}
 void InferenceEngine::velocity(const VelCmd& cmd) { impl_->policy->apply_velocity(cmd); }
 void InferenceEngine::update_phase() {
   if (impl_->policy->use_phase()) impl_->policy->update_phase_time();
 }
-void InferenceEngine::reset() { impl_->policy->reset(); }
+void InferenceEngine::reset() {
+  impl_->policy->reset();
+  impl_->pending_engagement = impl_->autostart;
+  if (impl_->autostart) {
+    impl_->policy->force_policy_active();
+    if (impl_->policy->config().is_wbt()) impl_->policy->dispatch_command(StateCommand::START_MOTION_CLIP);
+  }
+}
 const BasePolicy& InferenceEngine::policy() const { return *impl_->policy; }
 }  // namespace holosoma
