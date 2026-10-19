@@ -44,15 +44,22 @@ struct OnnxModel::Impl {
   Ort::RunOptions run_options;
 };
 
-OnnxModel::OnnxModel(const std::string& path) : impl_(std::make_unique<Impl>()), path_(path) {
+OnnxModel::OnnxModel(const std::string& path, bool use_gpu, int intra_op_threads)
+    : impl_(std::make_unique<Impl>()), path_(path) {
   if (!std::filesystem::is_regular_file(path)) {
     throw std::runtime_error("ONNX model not found: " + path);
   }
   Ort::SessionOptions options;
   // A single thread: these MLPs are tiny and a pool only adds wake-up jitter.
-  options.SetIntraOpNumThreads(1);
+  options.SetIntraOpNumThreads(intra_op_threads > 0 ? intra_op_threads : 1);
   options.SetInterOpNumThreads(1);
   options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+  if (use_gpu) {
+    OrtCUDAProviderOptions cuda_options{};
+    cuda_options.device_id = 0;
+    options.AppendExecutionProvider_CUDA(cuda_options);
+    options.AddConfigEntry("session.disable_cpu_ep_fallback", "1");
+  }
   try {
     impl_->session = std::make_unique<Ort::Session>(ort_env(), path.c_str(), options);
   } catch (const Ort::Exception& e) {

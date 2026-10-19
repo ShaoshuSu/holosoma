@@ -1,6 +1,6 @@
 [build-system]
-requires = ["uv_build>=0.9.9,<0.10"]
-build-backend = "uv_build"
+requires = ["scikit-build-core>=0.10,<0.12", "pybind11>=2.13,<3"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "holosoma-inference"
@@ -64,13 +64,13 @@ g1-29dof-loco = "holosoma_inference.config.config_values.inference:g1_29dof_loco
 t1-29dof-loco = "holosoma_inference.config.config_values.inference:t1_29dof_loco"
 g1-29dof-wbt = "holosoma_inference.config.config_values.inference:g1_29dof_wbt"
 
-# uv_build packaging. This is a FLAT layout (the holosoma_inference/ module
-# lives at the project root, not under src/), so module-root = "". Only the
-# holosoma_inference module ships — the sibling directories
-# (holosoma_inference_service, jetson_clocks_service, docker, docs) are not part
-# of this distribution, same as the old bare find_packages() behavior.
-[tool.uv.build-backend]
-module-name = "holosoma_inference"
-module-root = ""
-# Ship non-.py package data (py.typed marker + any config yamls) inside the wheel.
-source-include = ["holosoma_inference/py.typed", "holosoma_inference/**/*.yaml"]
+[tool.scikit-build]
+cmake.source-dir = "holosoma_cpp"
+wheel.packages = ["holosoma_inference"]
+sdist.include = ["holosoma_cpp/**", "holosoma_inference/**"]
+
+[tool.scikit-build.cmake.define]
+HOLOSOMA_BUILD_PYTHON = "ON"
+HOLOSOMA_BUILD_RUNNER = "OFF"
+HOLOSOMA_BUILD_TESTS = "OFF"
+HOLOSOMA_WITH_UNITREE_SDK = "OFF"

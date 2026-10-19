@@ -27,8 +27,7 @@ def _select_policy_class(config: InferenceConfig):
     All lookups are by string against entry-point groups, so core never imports or names
     extension-private policy classes.
     """
-    from holosoma_inference.policies.locomotion import LocomotionPolicy
-    from holosoma_inference.policies.wbt import WholeBodyTrackingPolicy
+    from holosoma_inference.policies.native_runner import NativeLocomotionRunner, NativeWbtRunner
     from holosoma_inference.pycompat import entry_points
 
     # 1. Explicit policy_type -> by_type entry-point group.
@@ -47,12 +46,12 @@ def _select_policy_class(config: InferenceConfig):
         for ep in entry_points(group="holosoma.policies.wbt"):
             if ep.name == robot_type:
                 return ep.load()
-        return WholeBodyTrackingPolicy
+        return NativeWbtRunner
 
     for ep in entry_points(group="holosoma.policies.locomotion"):
         if ep.name == robot_type:
             return ep.load()
-    return LocomotionPolicy
+    return NativeLocomotionRunner
 
 
 class DualModePolicy:
@@ -79,9 +78,13 @@ class DualModePolicy:
 
         # Init secondary with shared hardware
         logger.info(colored("Initializing secondary policy (shared hardware)...", "magenta"))
-        secondary = object.__new__(secondary_cls)
-        secondary._shared_hardware_source = self.primary
-        secondary.__init__(config=secondary_config)
+        from holosoma_inference.policies.native_runner import NativeRunnerPolicy
+        if issubclass(secondary_cls, NativeRunnerPolicy):
+            secondary = secondary_cls(config=secondary_config, shared_hardware=self.primary)
+        else:
+            secondary = object.__new__(secondary_cls)
+            secondary._shared_hardware_source = self.primary
+            secondary.__init__(config=secondary_config)
         self.secondary = secondary
 
         self.active = self.primary

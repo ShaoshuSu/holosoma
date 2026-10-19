@@ -280,6 +280,8 @@ RuntimeConfig parse_runtime(const YAML::Node& node, const std::string& path) {
   }
   MapReader r(node, path);
   r.optional("state_timeout_s", runtime.state_timeout_s);
+  r.optional("use_gpu", runtime.use_gpu);
+  r.optional("intra_op_threads", runtime.intra_op_threads);
   r.optional("damping_kd", runtime.damping_kd);
   r.finish();
   return runtime;

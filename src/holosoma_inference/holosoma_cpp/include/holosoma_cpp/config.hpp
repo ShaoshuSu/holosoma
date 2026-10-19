@@ -86,6 +86,8 @@ struct TaskConfig {
 
 // Options that only exist in the C++ runtime (YAML section `runtime`, CLI `--runtime.*`).
 struct RuntimeConfig {
+  bool use_gpu = false;
+  int intra_op_threads = 1;
   // Enter damping if the newest LowState is older than this while commanding (0 disables).
   double state_timeout_s = 0.5;
   // Derivative gain of the damping command (kp = 0) sent on faults and at exit.

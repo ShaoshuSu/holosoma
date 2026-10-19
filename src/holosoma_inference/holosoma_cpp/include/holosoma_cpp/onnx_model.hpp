@@ -18,7 +18,7 @@ struct TensorInfo {
 
 class OnnxModel {
  public:
-  explicit OnnxModel(const std::string& path);
+  explicit OnnxModel(const std::string& path, bool use_gpu = false, int intra_op_threads = 1);
   ~OnnxModel();
   OnnxModel(const OnnxModel&) = delete;
   OnnxModel& operator=(const OnnxModel&) = delete;

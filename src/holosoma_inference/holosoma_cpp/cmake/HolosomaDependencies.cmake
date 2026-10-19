@@ -18,6 +18,7 @@ if(NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM)
 endif()
 
 find_package(Threads REQUIRED)
+find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 
 function(_holosoma_require_fetch name)
   if(NOT HOLOSOMA_FETCH_DEPENDENCIES)
@@ -103,7 +104,9 @@ endif()
 
 # --- Unitree SDK2 (robot / simulator bridge transport) -------------------------
 set(HOLOSOMA_UNITREE_SDK2_ENABLED OFF)
-if(HOLOSOMA_WITH_UNITREE_SDK STREQUAL "AUTO")
+if(NOT HOLOSOMA_BUILD_RUNNER)
+  set(_want_unitree OFF)
+elseif(HOLOSOMA_WITH_UNITREE_SDK STREQUAL "AUTO")
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|aarch64|arm64)$")
     set(_want_unitree ON)
   else()

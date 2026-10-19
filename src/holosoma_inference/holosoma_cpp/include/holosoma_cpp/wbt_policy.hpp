@@ -20,6 +20,7 @@ class WholeBodyTrackingPolicy : public BasePolicy {
   void dispatch_command(StateCommand command) override;
   void handle_start_policy() override;
   void handle_stop_policy() override;
+  std::vector<double> infer_observation(const std::vector<float>& obs) override;
 
   bool motion_clip_progressing() const { return motion_clip_progressing_; }
   int motion_timestep() const { return curr_motion_timestep_; }

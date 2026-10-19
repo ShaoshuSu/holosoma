@@ -50,6 +50,9 @@ class BasePolicy {
 
   // Loads every model and activates the first one. Call once after construction.
   void initialize();
+  // Packed actor observation to scaled joint offsets, with no motor I/O.
+  virtual std::vector<double> infer_observation(const std::vector<float>& obs);
+  void reset();
 
   // ---- loop hooks (BasePolicy.run) ----
   virtual void apply_velocity(const VelCmd& vc);

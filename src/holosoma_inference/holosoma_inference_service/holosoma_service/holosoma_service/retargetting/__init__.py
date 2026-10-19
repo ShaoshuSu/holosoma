@@ -1,7 +1,7 @@
 """Retargeting: CmdSMPLH -> Retargeter -> CmdDense.
 
 Retargeter implementations are discovered from the ``holosoma.retargeter``
-entry-point group so extensions (e.g. FAR-pi ``holosoma_extensions``) can
+entry-point group so external extensions can
 register their own embodiment-specific retargeter without a code change here —
 select it at launch via ``retargeter:=<name>``. Each entry point must resolve to
 a class implementing the :class:`Retargeter` Protocol, constructible with
