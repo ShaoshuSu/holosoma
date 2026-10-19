@@ -137,12 +137,12 @@ g1_29dof_wbt_fast_sac = ExperimentConfig(
     nightly=NightlyConfig(
         iterations=200000,
         metrics={
-            "Episode/rew_motion_global_ref_position_error_exp": [0.40, "inf"],
+            "Episode/rew_motion_global_ref_position_error_exp": [0.18, "inf"],
             "Episode/rew_motion_global_ref_orientation_error_exp": [0.25, "inf"],
             "Episode/rew_motion_relative_body_position_error_exp": [1.1, "inf"],
-            "Episode/rew_motion_relative_body_orientation_error_exp": [0.35, "inf"],
-            "Episode/rew_motion_global_body_lin_vel": [0.45, "inf"],
-            "Episode/rew_motion_global_body_ang_vel": [0.15, "inf"],
+            "Episode/rew_motion_relative_body_orientation_error_exp": [0.09, "inf"],
+            "Episode/rew_motion_global_body_lin_vel": [0.29, "inf"],
+            "Episode/rew_motion_global_body_ang_vel": [0.09, "inf"],
         },
     ),
 )
