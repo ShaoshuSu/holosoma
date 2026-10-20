@@ -148,6 +148,36 @@ def test_terminal_read_of_no_envs_returns_empty_history() -> None:
     assert _policy(manager.step_terminal(torch.zeros(0, dtype=torch.long))).shape == (0, 2)
 
 
+class _StateView:
+    """Tensor-like simulator view that is not a ``torch.Tensor`` (like MuJoCo's state views)."""
+
+    def __init__(self, data: torch.Tensor) -> None:
+        self._data = data
+        self.shape = data.shape
+
+    def __getitem__(self, key: Any) -> torch.Tensor:
+        return self._data[key]
+
+    def clone(self) -> torch.Tensor:
+        return self._data.clone()
+
+
+def view_value(env: Any) -> Any:
+    return _StateView(env.value)
+
+
+def test_non_tensor_reads_go_through_noise_and_scale() -> None:
+    env = _env()
+    env.value = torch.tensor([[1.0], [2.0]])
+    terms = {"view": ObsTermCfg(func=f"{_HERE}:view_value", noise=0.5, scale=2.0)}
+    manager = _manager(env, enable_noise=True, terms=terms)
+
+    obs = _step(manager)
+
+    assert isinstance(obs, torch.Tensor) and obs.shape == (NUM_ENVS, 1)
+    assert torch.all((obs - env.value * 2.0).abs() <= 1.0)
+
+
 def test_noise_does_not_draw_from_the_global_rng() -> None:
     manager = _manager(_env(), enable_noise=True, terms={"value": ObsTermCfg(func=f"{_HERE}:env_value", noise=0.5)})
     rng_state = torch.get_rng_state()
