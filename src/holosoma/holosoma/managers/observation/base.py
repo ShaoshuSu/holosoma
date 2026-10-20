@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Callable, final
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, final
 
 from holosoma.utils.safe_torch_import import torch
 
