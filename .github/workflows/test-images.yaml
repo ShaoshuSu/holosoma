@@ -52,6 +52,9 @@ jobs:
           - simulator: mujoco
             multigpu: "False"
             image: ${{ inputs.mujoco_image }}
+          - simulator: isaacsim
+            multigpu: "True"
+            image: ${{ inputs.isaacsim_image }}
     name: Test ${{ matrix.simulator }} (${{ matrix.multigpu == 'True' && 'multi-gpu' || 'single-gpu' }})
     runs-on:
       - codebuild-holosoma-a10g-${{ matrix.multigpu == 'True' && 'x4' || 'x1' }}-gpu-build-${{ github.run_id }}-${{ github.run_attempt }} buildspec-override:true
