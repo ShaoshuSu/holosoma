@@ -55,7 +55,9 @@ def test_rgb_term_flows_through_dict_group_unaltered() -> None:
         groups={
             "image": ObsGroupCfg(
                 concatenate=False,
-                terms={"head_rgb": ObsTermCfg(func=f"{_TERMS}:camera_rgb", params={"sensor": "head"})},
+                terms={
+                    "head_rgb": ObsTermCfg(func=f"{_TERMS}:camera_rgb", params={"sensor": "head"}, global_clip=False)
+                },
             )
         }
     )
@@ -74,7 +76,11 @@ def test_depth_term_dict_group_shape_and_dtype() -> None:
         groups={
             "image": ObsGroupCfg(
                 concatenate=False,
-                terms={"head_depth": ObsTermCfg(func=f"{_TERMS}:camera_depth", params={"sensor": "head"})},
+                terms={
+                    "head_depth": ObsTermCfg(
+                        func=f"{_TERMS}:camera_depth", params={"sensor": "head"}, global_clip=False
+                    )
+                },
             )
         }
     )
@@ -92,8 +98,10 @@ def test_get_obs_dims_reports_image_shape_for_dict_group() -> None:
             "image": ObsGroupCfg(
                 concatenate=False,
                 terms={
-                    "head_rgb": ObsTermCfg(func=f"{_TERMS}:camera_rgb", params={"sensor": "head"}),
-                    "head_depth": ObsTermCfg(func=f"{_TERMS}:camera_depth", params={"sensor": "head"}),
+                    "head_rgb": ObsTermCfg(func=f"{_TERMS}:camera_rgb", params={"sensor": "head"}, global_clip=False),
+                    "head_depth": ObsTermCfg(
+                        func=f"{_TERMS}:camera_depth", params={"sensor": "head"}, global_clip=False
+                    ),
                 },
             )
         }
@@ -109,7 +117,9 @@ def test_image_term_in_concatenate_group_is_rejected() -> None:
         groups={
             "bad": ObsGroupCfg(
                 concatenate=True,
-                terms={"head_rgb": ObsTermCfg(func=f"{_TERMS}:camera_rgb", params={"sensor": "head"})},
+                terms={
+                    "head_rgb": ObsTermCfg(func=f"{_TERMS}:camera_rgb", params={"sensor": "head"}, global_clip=False)
+                },
             )
         }
     )
@@ -132,7 +142,9 @@ def test_rgb_term_transform_to_chw_float_for_policy() -> None:
                 concatenate=False,
                 terms={
                     "head_rgb": ObsTermCfg(
-                        func=f"{_TERMS}:camera_rgb", params={"sensor": "head", "transform": transform}
+                        func=f"{_TERMS}:camera_rgb",
+                        params={"sensor": "head", "transform": transform},
+                        global_clip=False,
                     )
                 },
             )

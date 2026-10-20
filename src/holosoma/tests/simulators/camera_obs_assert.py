@@ -108,9 +108,13 @@ def main() -> int:
                 concatenate=False,
                 terms={
                     "fast_rgb": ObsTermCfg(
-                        func=f"{_TERMS}:camera_rgb", params={"sensor": "fast_cam", "transform": rgb_tf}
+                        func=f"{_TERMS}:camera_rgb",
+                        params={"sensor": "fast_cam", "transform": rgb_tf},
+                        global_clip=False,
                     ),
-                    "slow_rgb": ObsTermCfg(func=f"{_TERMS}:camera_rgb", params={"sensor": "slow_cam"}),
+                    "slow_rgb": ObsTermCfg(
+                        func=f"{_TERMS}:camera_rgb", params={"sensor": "slow_cam"}, global_clip=False
+                    ),
                 },
             )
         }

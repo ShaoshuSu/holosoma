@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import pytest
 
@@ -156,6 +156,30 @@ def test_noise_does_not_draw_from_the_global_rng() -> None:
 
     assert torch.equal(torch.get_rng_state(), rng_state)
     assert not torch.equal(noisy, torch.zeros_like(noisy))
+
+
+class OffsetNoiseTerm(CounterTerm):
+    """Counter with a custom sensor-noise model that adds 0.5 and records its generator."""
+
+    generators: list[torch.Generator | None] = []
+
+    def generate_noise(self, obs: torch.Tensor, generator: torch.Generator | None) -> torch.Tensor:
+        self.generators.append(generator)
+        return obs + 0.5
+
+
+@pytest.mark.parametrize("enable_noise", [True, False])
+def test_custom_noise_model_runs_only_when_the_group_enables_noise(enable_noise: bool) -> None:
+    manager = _manager(
+        _env(), enable_noise=enable_noise, terms={"counter": ObsTermCfg(func=f"{_HERE}:OffsetNoiseTerm")}
+    )
+    term = cast("OffsetNoiseTerm", manager._terms["policy"]["counter"])
+    term.generators = []
+
+    obs = _step(manager)
+
+    assert obs[:, 0].tolist() == ([1.5, 1.5] if enable_noise else [1.0, 1.0])
+    assert term.generators == ([manager._noise_generator] if enable_noise else [])
 
 
 def test_noise_follows_the_global_seed() -> None:

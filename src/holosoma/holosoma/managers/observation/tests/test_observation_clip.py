@@ -1,51 +1,80 @@
-"""ObservationManager.clip_observations: flat float groups are clipped, image terms are not."""
+"""Global observation clipping: applied per term, unless the term sets ``global_clip=False``."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
-from holosoma.config_types.observation import ObservationManagerCfg
+from holosoma.config_types.observation import ObservationManagerCfg, ObsGroupCfg, ObsTermCfg
 from holosoma.managers.observation.manager import ObservationManager
 from holosoma.utils.safe_torch_import import torch
 
 pytestmark = pytest.mark.no_sim
 
-
-def _manager(clip_limit: float = 100.0) -> ObservationManager:
-    return ObservationManager(ObservationManagerCfg(clip_observations=clip_limit), SimpleNamespace(num_envs=1), "cpu")
+_HERE = "holosoma.managers.observation.tests.test_observation_clip"
 
 
-def test_clip_observations_handles_dict_group_and_uint8() -> None:
-    """A flat float group is clipped; a dict group recurses; uint8 images pass through unclipped."""
-    flat = torch.tensor([[500.0, -500.0, 1.0]])  # exceeds +/-100, gets clipped
-    image = torch.full((1, 4, 4, 3), 200, dtype=torch.uint8)  # uint8 image, stays unclipped
-    proprio = torch.tensor([[5.0, -5.0]])  # within range, unchanged
-    obs = {
-        "actor_obs": flat,
-        "image_group": {"front_rgb": image, "proprio": proprio},
+def flat(env: Any) -> torch.Tensor:
+    return env.flat
+
+
+def image(env: Any) -> torch.Tensor:
+    return env.image
+
+
+def _step(groups: dict[str, ObsGroupCfg], **values: torch.Tensor) -> dict[str, Any]:
+    env = SimpleNamespace(num_envs=1, device="cpu", **values)
+    manager = ObservationManager(ObservationManagerCfg(groups=groups, clip_observations=100.0), env, "cpu")
+    manager.new_frame()
+    return manager.step()
+
+
+def test_global_clip_applies_to_flagged_terms_only() -> None:
+    value = torch.tensor([[500.0, -500.0, 1.0]])
+    terms = {
+        "clipped": ObsTermCfg(func=f"{_HERE}:flat"),
+        "unclipped": ObsTermCfg(func=f"{_HERE}:flat", global_clip=False),
     }
 
-    out = _manager().clip_observations(obs)
+    obs = _step({"g": ObsGroupCfg(concatenate=False, terms=terms)}, flat=value)["g"]
 
-    # Flat float group clipped to +/-100.
-    assert torch.equal(out["actor_obs"], torch.tensor([[100.0, -100.0, 1.0]]))
-    # Dict group preserved as a dict.
-    assert isinstance(out["image_group"], dict)
-    # uint8 image untouched (not clipped to +/-100).
-    assert torch.equal(out["image_group"]["front_rgb"], image)
-    assert out["image_group"]["front_rgb"].dtype == torch.uint8
-    # Float term inside the dict group within range, unchanged.
-    assert torch.equal(out["image_group"]["proprio"], proprio)
+    assert obs["clipped"].tolist() == [[100.0, -100.0, 1.0]]
+    assert torch.equal(obs["unclipped"], value)
 
 
-def test_clip_observations_preserves_depth_inf_sentinel() -> None:
-    """A float32 depth image (4-D) keeps its +inf no-hit sentinel; clipping would corrupt it."""
-    depth = torch.full((1, 4, 4, 1), 250.0)  # finite far depth, beyond the +/-100 clip
-    depth[0, 0, 0, 0] = float("inf")  # no-hit sentinel
+def test_flattened_depth_keeps_its_sentinel_when_opted_out() -> None:
+    """A flattened image in a concatenated group is 2-D float, but opting out keeps +inf and far depths."""
+    depth = torch.tensor([[float("inf"), 250.0, 1.0]])
+    terms = {"depth": ObsTermCfg(func=f"{_HERE}:flat", global_clip=False)}
 
-    out = _manager().clip_observations({"image_group": {"front_depth": depth.clone()}})["image_group"]["front_depth"]
+    obs = _step({"g": ObsGroupCfg(terms=terms)}, flat=depth)["g"]
 
-    assert torch.isinf(out[0, 0, 0, 0])  # sentinel survives (not clamped to 100)
-    assert float(out[0, 1, 1, 0]) == 250.0  # far depth not clamped
+    assert torch.isinf(obs[0, 0]) and float(obs[0, 1]) == 250.0
+
+
+def test_opted_out_uint8_image_is_untouched() -> None:
+    rgb = torch.full((1, 4, 4, 3), 200, dtype=torch.uint8)
+    terms = {"rgb": ObsTermCfg(func=f"{_HERE}:image", global_clip=False)}
+
+    out = _step({"g": ObsGroupCfg(concatenate=False, terms=terms)}, image=rgb)["g"]["rgb"]
+
+    assert out.dtype == torch.uint8 and torch.equal(out, rgb)
+
+
+def test_global_clip_follows_scale_and_term_clip() -> None:
+    """Order: scale, then the term's clip, then the global limit."""
+    terms = {"x": ObsTermCfg(func=f"{_HERE}:flat", scale=10.0, clip=(-50.0, 50.0))}
+
+    obs = _step({"g": ObsGroupCfg(terms=terms)}, flat=torch.tensor([[20.0, 2.0]]))["g"]
+
+    assert obs.tolist() == [[50.0, 20.0]]
+
+
+def test_layout_reports_global_clip() -> None:
+    terms = {"a": ObsTermCfg(func=f"{_HERE}:flat"), "b": ObsTermCfg(func=f"{_HERE}:flat", global_clip=False)}
+    env = SimpleNamespace(num_envs=1, device="cpu", flat=torch.zeros(1, 2))
+    manager = ObservationManager(ObservationManagerCfg(groups={"g": ObsGroupCfg(terms=terms)}), env, "cpu")
+
+    assert [entry["global_clip"] for entry in manager.get_observation_layout(["g"])] == [True, False]

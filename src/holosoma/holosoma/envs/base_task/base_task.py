@@ -539,10 +539,9 @@ class BaseTask:
         self.obs_buf_dict = self.observation_manager.step()
 
         if final_obs_dict:
-            self._store_final_observations(timeout_ids, self.observation_manager.clip_observations(final_obs_dict))
+            self._store_final_observations(timeout_ids, final_obs_dict)
 
         self._post_compute_observations_callback()
-        self.obs_buf_dict.update(self.observation_manager.clip_observations(self.obs_buf_dict))
 
         self.extras["to_log"] = self.log_dict
         if self.viewer:

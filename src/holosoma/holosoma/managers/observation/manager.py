@@ -7,7 +7,7 @@ from typing import Any, Sequence
 
 import torch
 
-from holosoma.config_types.observation import ObservationManagerCfg, ObsGroupCfg, ObsTermCfg
+from holosoma.config_types.observation import ObservationManagerCfg, ObsGroupCfg
 from holosoma.managers.utils import resolve_callable
 
 from .base import FunctionTerm, ObservationTermBase
@@ -16,10 +16,9 @@ from .base import FunctionTerm, ObservationTermBase
 class ObservationManager:
     """Manages observation computation with groups, terms, and processing.
 
-    The manager orchestrates the computation of observations from multiple terms,
-    applying scaling, noise, clipping, and history buffering to produce the final
-    observation tensors. It maintains exact equivalence with the direct observation
-    system while providing a more modular structure.
+    Each term reads, adds noise, scales and clips its own observation
+    (:meth:`ObservationTermBase.observe`); the manager runs the per-frame clock, supplies
+    the noise generator and global clip limit, and handles history and concatenation.
 
     Parameters
     ----------
@@ -136,36 +135,6 @@ class ObservationManager:
         self._terminal_rows[env_ids] = True
         return {group_name: self._compute_group(group_name, env_ids) for group_name in self.cfg.groups}
 
-    def clip_observations(self, obs_dict: dict[str, Any]) -> dict[str, Any]:
-        """Clip observations to ``[-clip_observations, clip_observations]``.
-
-        Only 2-D float tensors are clipped; image terms and other values are returned unchanged.
-
-        Parameters
-        ----------
-        obs_dict : dict[str, Any]
-            Observations keyed by group, as returned by :meth:`step` or :meth:`step_terminal`.
-
-        Returns
-        -------
-        dict[str, Any]
-            A new dict with the clipped observations.
-        """
-        return {group_name: self._clip_value(value) for group_name, value in obs_dict.items()}
-
-    def _clip_value(self, value: Any) -> Any:
-        """Clip one group's tensor, or each tensor of a ``concatenate=False`` group's dict."""
-        # A concatenate=False group is a dict of per-term tensors; recurse one level.
-        if isinstance(value, dict):
-            return {k: self._clip_value(v) for k, v in value.items()}
-        # Only clip flat (2-D [N, feature]) float observations. Image/depth terms
-        # ([N, H, W, C]) are not bounded observations and clipping would corrupt them
-        # (e.g. collapse the depth +inf no-hit sentinel to clip_limit).
-        if isinstance(value, torch.Tensor) and value.is_floating_point() and value.ndim == 2:
-            clip_limit = self.cfg.clip_observations
-            return torch.clip(value, -clip_limit, clip_limit)
-        return value
-
     def _compute_group(self, group_name: str, env_ids: torch.Tensor | None) -> torch.Tensor | dict[str, torch.Tensor]:
         """Compute one group for all envs (``env_ids=None``, advancing history) or for ``env_ids``.
 
@@ -186,25 +155,15 @@ class ObservationManager:
         group_cfg = self.cfg.groups[group_name]
         obs_tensors = {}
 
-        for term_name, term_cfg in group_cfg.terms.items():
-            # 1. Compute base observation
-            obs = self._compute_term(group_name, term_name, term_cfg, env_ids=env_ids)
-
-            # 2. Apply noise (matches direct: noise before scaling)
-            if group_cfg.enable_noise and term_cfg.noise > 0:
-                obs = self._apply_noise(obs, term_cfg.noise)
-
-            # 3. Apply scaling (matches direct: scale after noise). Skip the multiply when the
-            # scale is the default 1.0 (numerically a no-op) so a non-float term (e.g. a uint8
-            # RGB image) keeps its native dtype instead of being promoted to float.
-            if term_cfg.scale != 1.0:
-                obs = self._apply_scale(obs, term_cfg.scale)
-
-            # 4. Apply clipping (if specified)
-            if term_cfg.clip is not None:
-                obs = obs.clip(term_cfg.clip[0], term_cfg.clip[1])
-
-            # 5. Handle history buffering
+        for term_name, term in self._terms[group_name].items():
+            # The term reads, adds noise, scales and clips; history is kept per group here.
+            obs = term.observe(
+                self.env,
+                env_ids,
+                with_noise=group_cfg.enable_noise,
+                generator=self._noise_generator,
+                clip_limit=self.cfg.clip_observations,
+            )
             if group_cfg.history_length > 1:
                 obs = self._apply_history(group_name, term_name, obs, group_cfg, env_ids=env_ids)
 
@@ -224,68 +183,6 @@ class ObservationManager:
                     )
             return torch.cat([obs_tensors[key] for key in sorted_keys], dim=-1)
         return obs_tensors
-
-    def _compute_term(
-        self, group_name: str, term_name: str, term_cfg: ObsTermCfg, *, env_ids: torch.Tensor | None = None
-    ) -> torch.Tensor:
-        """Compute a single observation term.
-
-        Parameters
-        ----------
-        group_name : str
-            Name of the observation group.
-        term_name : str
-            Name of the observation term.
-        term_cfg : ObsTermCfg
-            Configuration for the observation term.
-        env_ids : torch.Tensor or None, optional
-            Rows to compute; stateful terms advance only these. ``None`` computes all envs.
-
-        Returns
-        -------
-        torch.Tensor
-            Observation tensor with shape ``[num_envs, obs_dim]``, or ``[len(env_ids), obs_dim]``.
-        """
-        return self._terms[group_name][term_name].observe(self.env, env_ids, **term_cfg.params)
-
-    def _apply_noise(self, obs: torch.Tensor, noise_scale: float) -> torch.Tensor:
-        """Apply uniform observation noise.
-
-        The implementation matches the direct path, sampling uniform noise in
-        ``[-noise_scale, noise_scale]``.
-
-        Parameters
-        ----------
-        obs : torch.Tensor
-            Observation tensor.
-        noise_scale : float
-            Magnitude of the uniform noise.
-
-        Returns
-        -------
-        torch.Tensor
-            Noisy observation tensor.
-        """
-        rand = torch.rand(obs.shape, generator=self._noise_generator, device=obs.device, dtype=obs.dtype)
-        noise = (rand * 2.0 - 1.0) * noise_scale
-        return obs + noise
-
-    def _apply_scale(self, obs: torch.Tensor, scale: float | tuple[float, ...]) -> torch.Tensor:
-        """Apply scaling to an observation tensor.
-
-        Parameters
-        ----------
-        obs : torch.Tensor
-            Observation tensor.
-        scale : float or tuple
-            Scalar or per-dimension scale factors.
-
-        Returns
-        -------
-        torch.Tensor
-            Scaled observation tensor.
-        """
-        return obs * scale
 
     def _apply_history(
         self,
@@ -398,8 +295,7 @@ class ObservationManager:
         tuple[int, ...]
             The term's output shape without the env axis.
         """
-        term_cfg = self.cfg.groups[group_name].terms[term_name]
-        return self._terms[group_name][term_name].shape(self.env, **term_cfg.params)
+        return self._terms[group_name][term_name].shape(self.env)
 
     def get_obs_dims(self) -> dict[str, int | dict[str, int | tuple[int, ...]]]:
         """Get observation dimensions for each group.
@@ -463,7 +359,7 @@ class ObservationManager:
         -------
         list[dict[str, Any]]
             Per-term ``group``, ``name``, ``func``, ``dim``, ``history_length``, ``scale``,
-            ``clip`` and ``params``.
+            ``clip``, ``global_clip`` and ``params``.
         """
         layout: list[dict[str, Any]] = []
         for group_name in group_names:
@@ -482,6 +378,7 @@ class ObservationManager:
                         "history_length": group_cfg.history_length,
                         "scale": term_cfg.scale,
                         "clip": term_cfg.clip,
+                        "global_clip": term_cfg.global_clip,
                         "params": term_cfg.params,
                     }
                 )
