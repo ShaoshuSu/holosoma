@@ -145,7 +145,7 @@ The PyPI releases cut from that commit:
 | Package | Version | Tag |
 |---|---|---|
 | `holosoma` | `0.0.3` (final Isaac Gym-compatible release) | `holosoma-v0.0.3` |
-| `holosoma-retargeting` | `0.1.1` (does not use Isaac Gym) | `holosoma-retargeting-v0.1.1` |
+| `holosoma-inference` | `0.1.3` (last release for Python 3.8 and 3.9) | `holosoma-inference-v0.1.3` |
 
 [isaacgym-release]: https://github.com/amazon-far/holosoma/releases/tag/holosoma-v0.0.3
 [isaacgym-readme]: https://github.com/amazon-far/holosoma/blob/holosoma-v0.0.3/README.md
