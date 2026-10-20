@@ -63,6 +63,22 @@ def test_opted_out_uint8_image_is_untouched() -> None:
     assert out.dtype == torch.uint8 and torch.equal(out, rgb)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        torch.full((1, 4, 4, 3), 200, dtype=torch.uint8),  # RGB image
+        torch.full((1, 4, 4, 1), float("inf")),  # depth image
+        torch.tensor([[True, False]]),  # contact flags
+    ],
+    ids=["uint8_image", "float_image", "bool"],
+)
+def test_global_clip_on_a_term_that_is_not_2d_float_raises(value: torch.Tensor) -> None:
+    terms = {"term": ObsTermCfg(func=f"{_HERE}:image")}
+
+    with pytest.raises(ValueError, match="Set global_clip=False"):
+        _step({"g": ObsGroupCfg(concatenate=False, terms=terms)}, image=value)
+
+
 def test_global_clip_follows_scale_and_term_clip() -> None:
     """Order: scale, then the term's clip, then the global limit."""
     terms = {"x": ObsTermCfg(func=f"{_HERE}:flat", scale=10.0, clip=(-50.0, 50.0))}

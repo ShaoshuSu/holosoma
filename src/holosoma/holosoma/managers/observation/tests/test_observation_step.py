@@ -203,8 +203,10 @@ class LeadingViewTerm(CounterTerm):
         return self.count[: len(env_ids)].unsqueeze(1)
 
 
-def test_terminal_obs_survive_reset_of_term_state() -> None:
-    manager = _manager(_env(), terms={"counter": ObsTermCfg(func=f"{_HERE}:LeadingViewTerm")})
+@pytest.mark.parametrize("global_clip", [True, False])  # False: no postprocess op runs, so observe must copy
+def test_terminal_obs_survive_reset_of_term_state(global_clip: bool) -> None:
+    terms = {"counter": ObsTermCfg(func=f"{_HERE}:LeadingViewTerm", global_clip=global_clip)}
+    manager = _manager(_env(), terms=terms)
     _step(manager)
 
     manager.new_frame()

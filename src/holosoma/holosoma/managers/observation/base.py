@@ -66,7 +66,7 @@ class ObservationTermBase(ABC):
             generator: Random generator to draw from, so noise does not shift the global RNG
 
         Returns:
-            Noisy observation, same shape as ``obs``
+            Noisy observation, same shape as ``obs``: a new tensor, or ``obs`` itself, never a view of it
         """
         if self.cfg.noise <= 0:
             return obs
@@ -85,6 +85,10 @@ class ObservationTermBase(ABC):
 
         Returns:
             The observation the policy sees for this term
+
+        Raises:
+            ValueError: If ``cfg.global_clip`` is set on a term that is not 2-D float, since clipping
+                would convert it to float and saturate it (e.g. uint8 RGB, the depth ``+inf`` sentinel).
         """
         # Skip the multiply at the default 1.0 so a non-float term (e.g. uint8 RGB) keeps its dtype.
         if self.cfg.scale != 1.0:
@@ -92,6 +96,12 @@ class ObservationTermBase(ABC):
         if self.cfg.clip is not None:
             obs = obs.clip(self.cfg.clip[0], self.cfg.clip[1])
         if self.cfg.global_clip:
+            if not (obs.is_floating_point() and obs.ndim == 2):
+                raise ValueError(
+                    f"Observation term {type(self).__name__} ({self.cfg.func}) has global_clip set but returns "
+                    f"{obs.dtype} with per-env shape {tuple(obs.shape[1:])}; the global clip only applies to 2-D "
+                    f"float observations. Set global_clip=False for image and non-float terms."
+                )
             obs = obs.clip(-clip_limit, clip_limit)
         return obs
 
@@ -117,10 +127,11 @@ class ObservationTermBase(ABC):
         Returns:
             A copy, since the term may return a view of state that ``reset`` overwrites
         """
-        obs = self._checked_read(env, env_ids)
-        if with_noise:
-            obs = self.generate_noise(obs, generator)
-        return self.postprocess(obs, clip_limit).clone()
+        raw = self._checked_read(env, env_ids)
+        obs = self.generate_noise(raw, generator) if with_noise else raw
+        out = self.postprocess(obs, clip_limit)
+        # Scale, clip and noise already produce a new tensor; copy only when none of them ran.
+        return out.clone() if out is raw else out
 
     @final
     def shape(self, env: Any) -> tuple[int, ...]:
