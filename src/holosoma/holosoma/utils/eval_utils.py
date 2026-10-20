@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import dataclasses
 import logging
 import os
 import re
@@ -16,6 +18,7 @@ from tqdm import tqdm
 # CONFIG_NAME is "holosoma_config.yaml" - the primary configuration file for Holosoma
 # This file contains all settings for training and evaluation of models
 from holosoma.config_types.experiment import ExperimentConfig
+from holosoma.config_values.simulator import SIMULATOR_REGISTRY
 from holosoma.utils.config_utils import CONFIG_NAME
 from holosoma.utils.file_cache import get_cached_file_path
 from holosoma.utils.logging import LoguruLoggingBridge
@@ -94,7 +97,7 @@ def load_saved_experiment_config(checkpoint_cfg: CheckpointConfig) -> tuple[Expe
     cached_config_path = get_cached_file_path(config_uri)
 
     with open(cached_config_path) as f:
-        return ExperimentConfig(**yaml.safe_load(f)), wandb_run_path
+        return _experiment_config_from_saved(yaml.safe_load(f)), wandb_run_path
 
 
 def _load_config_from_checkpoint(checkpoint_path: Path) -> tuple[ExperimentConfig, str | None]:
@@ -102,7 +105,66 @@ def _load_config_from_checkpoint(checkpoint_path: Path) -> tuple[ExperimentConfi
 
     checkpoint_contents = torch.load(checkpoint_path, map_location="cpu")
     config_data = checkpoint_contents["experiment_config"]
-    return ExperimentConfig(**config_data), checkpoint_contents.get("wandb_run_path")
+    return _experiment_config_from_saved(config_data), checkpoint_contents.get("wandb_run_path")
+
+
+def _experiment_config_from_saved(config_data: dict[str, Any]) -> ExperimentConfig:
+    """Build an ExperimentConfig from a saved config, migrating fields retired with Isaac Gym."""
+    return ExperimentConfig(**_drop_retired_isaacgym_fields(config_data))
+
+
+def replace_retired_simulator(eval_cfg: ExperimentConfig, args: list[str]) -> ExperimentConfig:
+    """Swap a saved Isaac Gym simulator for the one a ``simulator:<name>`` CLI token selects.
+
+    tyro attaches a default that matches no registered preset to the most similar one, so a saved
+    Isaac Gym simulator would take over the ``isaacsim`` slot and ``simulator:isaacsim`` would
+    silently keep Isaac Gym. Starting from the selected preset instead makes every override take
+    effect. Without a token the saved simulator is kept, and startup reports it as unsupported.
+    """
+    if eval_cfg.simulator.config.name != "isaacgym":
+        return eval_cfg
+    selected = [arg.split(":", 1)[1] for arg in args if arg.startswith("simulator:")]
+    if not selected or selected[-1] not in SIMULATOR_REGISTRY:
+        return eval_cfg
+    return dataclasses.replace(eval_cfg, simulator=SIMULATOR_REGISTRY[selected[-1]])
+
+
+def _drop_retired_isaacgym_fields(config_data: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of a saved config without the Isaac Gym fields the schema no longer has.
+
+    ``to_serializable_dict()`` writes every backend's sub-config, active or not, so configs saved
+    before Isaac Gym was retired carry ``isaacgym`` blocks even when they ran on Isaac Sim or
+    MuJoCo. ``PhysicsConfig`` and ``CameraSensorConfig`` forbid extra fields, so those blocks would
+    otherwise reject the whole config. Only the known schema paths are touched; the selected
+    simulator and every other backend's settings are kept as saved.
+    """
+    data = copy.deepcopy(config_data)
+
+    def _drop(block: Any, key: str = "isaacgym") -> None:
+        if isinstance(block, dict):
+            block.pop(key, None)
+
+    robot = data.get("robot") or {}
+    _drop(robot, "apply_dof_armature_in_isaacgym")
+    _drop((robot.get("asset") or {}).get("link_physics"))
+
+    scene = data.get("scene") or {}
+    for rigid_object in (scene.get("rigid_objects") or {}).values():
+        _drop(rigid_object.get("physics"))
+    for scene_file in (scene.get("scene_files") or {}).values():
+        for pattern in (scene_file.get("object_configs") or {}).values():
+            _drop(pattern.get("physics"))
+
+    for sensor in (data.get("sensor") or {}).values():
+        _drop(sensor)
+
+    for terms in (data.get("randomization") or {}).values():
+        if isinstance(terms, dict):
+            for term in terms.values():
+                if isinstance(term, dict):
+                    _drop((term.get("params") or {}).get("material"))
+
+    return data
 
 
 class CheckpointMetadata(TypedDict):
