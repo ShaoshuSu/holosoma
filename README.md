@@ -123,18 +123,16 @@ Watch real-world deployments of Holosoma policies *(click thumbnails to play)*
 
 > **NVIDIA Isaac Gym is no longer supported in this version.**
 >
-> For existing Isaac Gym workflows, use the pre-removal version and its [original README][isaacgym-readme]. A release tag for the final compatible version is planned.
+> For existing Isaac Gym workflows, use the final compatible release, [`holosoma-v0.0.3`][isaacgym-release], and its [original README][isaacgym-readme].
 >
 > **Supported simulators:** NVIDIA Isaac Sim, MuJoCo Warp, and MuJoCo.
 
-Use a separate checkout of the complete pre-removal version so the backend,
-setup scripts, dependency constraints, and documentation stay together.
-Until the release tag is published, use the preserved revision `8b83d915`:
+Use a separate checkout of that release so the backend, setup scripts,
+dependency constraints, and documentation stay together:
 
 ```bash
-git clone https://github.com/amazon-far/holosoma.git holosoma-isaacgym
+git clone --branch holosoma-v0.0.3 https://github.com/amazon-far/holosoma.git holosoma-isaacgym
 cd holosoma-isaacgym
-git checkout --detach 8b83d915a7cd4e148c7049d8d0d4bfcaa1482808
 bash scripts/setup_isaacgym.sh
 source scripts/source_isaacgym_setup.sh
 ```
@@ -142,8 +140,16 @@ source scripts/source_isaacgym_setup.sh
 Follow that version's [original README][isaacgym-readme] and
 [training guide][isaacgym-training] for Isaac Gym training and evaluation.
 
-[isaacgym-readme]: https://github.com/amazon-far/holosoma/blob/8b83d915a7cd4e148c7049d8d0d4bfcaa1482808/README.md
-[isaacgym-training]: https://github.com/amazon-far/holosoma/blob/8b83d915a7cd4e148c7049d8d0d4bfcaa1482808/src/holosoma/README.md
+The PyPI releases cut from that commit:
+
+| Package | Version | Tag |
+|---|---|---|
+| `holosoma` | `0.0.3` (final Isaac Gym-compatible release) | `holosoma-v0.0.3` |
+| `holosoma-retargeting` | `0.1.1` (does not use Isaac Gym) | `holosoma-retargeting-v0.1.1` |
+
+[isaacgym-release]: https://github.com/amazon-far/holosoma/releases/tag/holosoma-v0.0.3
+[isaacgym-readme]: https://github.com/amazon-far/holosoma/blob/holosoma-v0.0.3/README.md
+[isaacgym-training]: https://github.com/amazon-far/holosoma/blob/holosoma-v0.0.3/src/holosoma/README.md
 
 ## Issue Reporting
 

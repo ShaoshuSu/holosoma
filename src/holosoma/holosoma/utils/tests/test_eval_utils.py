@@ -448,7 +448,7 @@ def test_load_checkpoint_updates_stale_copy(tmp_path: Path) -> None:
         assert result_path.stat().st_mtime > old_mtime
 
 
-# Configs saved by `to_serializable_dict()` at 8b83d915, the last commit with the Isaac Gym backend.
+# Configs saved by `to_serializable_dict()` at 8b83d915, before the Isaac Gym retirement (see holosoma-v0.0.3).
 # They carry the `isaacgym` blocks every backend serialized before the retirement.
 _PREVIOUS_SCHEMA_DIR = Path(__file__).parent / "data" / "pre_isaacgym_retirement"
 _SURVIVING_BACKEND_FIXTURES = {
