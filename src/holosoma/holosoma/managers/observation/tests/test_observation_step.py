@@ -138,6 +138,16 @@ def test_terminal_history_appends_current_frame_without_modifying_buffers() -> N
     assert _policy(manager.step()).tolist() == [[1.0, 2.0], [0.0, 20.0]]
 
 
+def test_terminal_read_of_no_envs_returns_empty_history() -> None:
+    env = _env()
+    manager = _manager(env, history_length=2, terms={"value": ObsTermCfg(func=f"{_HERE}:env_value")})
+    _step(manager)
+
+    manager.new_frame()
+
+    assert _policy(manager.step_terminal(torch.zeros(0, dtype=torch.long))).shape == (0, 2)
+
+
 def test_noise_does_not_draw_from_the_global_rng() -> None:
     manager = _manager(_env(), enable_noise=True, terms={"value": ObsTermCfg(func=f"{_HERE}:env_value", noise=0.5)})
     rng_state = torch.get_rng_state()

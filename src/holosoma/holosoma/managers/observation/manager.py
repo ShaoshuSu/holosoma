@@ -359,18 +359,17 @@ class ObservationManager:
                 history = history[-group_cfg.history_length :]
 
         # If buffer not full yet, pad with zeros (same as direct behavior)
-        num_rows = obs.shape[0]
+        num_rows, obs_dim = obs.shape[0], obs.shape[1]
         if len(history) < group_cfg.history_length:
             num_missing = group_cfg.history_length - len(history)
-            obs_dim = obs.shape[1]
             padding = [torch.zeros(num_rows, obs_dim, device=self.device) for _ in range(num_missing)]
             history = padding + history
 
         # Stack along time dimension: [num_rows, history_length, obs_dim]
         stacked = torch.stack(history, dim=1)
 
-        # Flatten to [num_rows, history_length * obs_dim]
-        return stacked.reshape(num_rows, -1)
+        # Flatten to [num_rows, history_length * obs_dim]; explicit, since -1 is ambiguous for zero rows
+        return stacked.reshape(num_rows, group_cfg.history_length * obs_dim)
 
     def reset(self, env_ids: torch.Tensor | None = None) -> None:
         """Reset observation history and stateful terms.
