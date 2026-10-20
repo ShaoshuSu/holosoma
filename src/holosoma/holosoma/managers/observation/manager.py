@@ -89,6 +89,11 @@ class ObservationManager:
         The env calls it once per control step, after physics; call it yourself when driving the
         manager without an env.
         """
+        # step() clears _terminal_ran once it has checked the rows, so this only syncs when it didn't.
+        if self._terminal_ran and bool(self._terminal_rows.any()):
+            raise RuntimeError(
+                "ObservationManager.new_frame() called before resetting the envs advanced by step_terminal()."
+            )
         self._frame_ready = True
         self._terminal_ran = False
 
@@ -113,6 +118,7 @@ class ObservationManager:
                 "ObservationManager.step() called before resetting the envs advanced by step_terminal()."
             )
         self._frame_ready = False
+        self._terminal_ran = False
         return {group_name: self._compute_group(group_name, None) for group_name in self.cfg.groups}
 
     def step_terminal(self, env_ids: torch.Tensor) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:

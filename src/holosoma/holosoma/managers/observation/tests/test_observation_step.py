@@ -101,6 +101,16 @@ def test_step_before_resetting_terminal_rows_raises() -> None:
         manager.step()
 
 
+def test_new_frame_before_resetting_terminal_rows_raises() -> None:
+    manager = _manager(_env())
+    manager.new_frame()
+    manager.step_terminal(torch.tensor([1]))
+
+    # The frame is abandoned without reset or step: the next frame must not open over it.
+    with pytest.raises(RuntimeError, match=r"new_frame\(\) called before resetting"):
+        manager.new_frame()
+
+
 def test_step_terminal_after_step_or_twice_raises() -> None:
     manager = _manager(_env())
     _step(manager)
