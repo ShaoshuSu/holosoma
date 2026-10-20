@@ -5,22 +5,20 @@ from typing import TYPE_CHECKING, Any, Mapping, cast
 
 import torch
 
-from holosoma.envs.base_task.base_task import BaseTask
-
-# from holosoma.envs.legged_base_task.legged_robot_base import LeggedRobotBase
+from holosoma.policy_task import PolicyTask
 from holosoma.utils.simulator_config import SimulatorType
 
 if TYPE_CHECKING:
-    from holosoma.config_types.env import EnvConfig
     from holosoma.managers.command.terms.wbt import MotionCommand
     from holosoma.managers.curriculum.terms.locomotion import AverageEpisodeLengthTracker
     from holosoma.managers.randomization.terms.locomotion import PushRandomizerState
 
 
-class WholeBodyTrackingManager(BaseTask):
-    def __init__(self, tyro_config: EnvConfig, *, device: str) -> None:
-        super().__init__(tyro_config, device=device)
-        assert not hasattr(self.simulator, "gym"), "WBT requires IsaacSim — IsaacGym is not supported."
+class WholeBodyTrackingManager(PolicyTask):
+    def _validate_task(self) -> None:
+        super()._validate_task()
+        if self.simulator.get_simulator_type() == SimulatorType.ISAACGYM:
+            raise ValueError("WBT requires IsaacSim; IsaacGym is not supported.")
 
     def _init_buffers(self) -> None:
         """Initialize torch tensors which will contain simulation states and processed quantities"""
@@ -62,12 +60,8 @@ class WholeBodyTrackingManager(BaseTask):
         return self.need_to_refresh_envs.nonzero(as_tuple=False).flatten()
 
     def _refresh_envs_after_reset(self, env_ids: torch.Tensor) -> None:
-        self.simulator.set_actor_root_state_tensor(env_ids, self.simulator.all_root_states)
-        self.simulator.set_dof_state_tensor(env_ids, self.simulator.dof_state)  # type: ignore[attr-defined]
-        self.simulator.clear_contact_forces_history(env_ids)
+        super()._refresh_envs_after_reset(env_ids)
         self.need_to_refresh_envs[env_ids] = False
-        self.simulator.refresh_sim_tensors()
-        self._pre_compute_observations_callback()
 
     def _get_average_episode_tracker(self) -> AverageEpisodeLengthTracker:
         tracker = self.curriculum_manager.get_term("average_episode_tracker")

@@ -3,17 +3,17 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Callable
 
 from holosoma.config_types.algo import AlgoInitConfig
-from holosoma.envs.base_task.base_task import BaseTask
 from holosoma.utils.safe_torch_import import torch
 
 if TYPE_CHECKING:
     from holosoma.config_types.experiment import ExperimentConfig
+    from holosoma.policy_task import PolicyTask
 
 
 class BaseAlgo:
     def __init__(
         self,
-        env: BaseTask,
+        env: PolicyTask,
         config: AlgoInitConfig,
         device: str,
         multi_gpu_cfg: dict[str, int] | None = None,
@@ -51,12 +51,6 @@ class BaseAlgo:
     @property
     def actor_onnx_wrapper(self) -> type[NotImplementedError]:
         return NotImplementedError
-
-    def env_step(
-        self, actions: torch.Tensor, extra_info: dict[str, Any] | None = None
-    ) -> tuple[dict[str, Any], torch.Tensor, torch.Tensor, dict[str, Any]]:
-        obs_dict, rewards, dones, extras = self.env.step(actions, extra_info)  # type: ignore[call-arg]
-        return obs_dict, rewards, dones, extras
 
     def attach_checkpoint_metadata(
         self,
@@ -140,7 +134,7 @@ class BaseAlgo:
     def save(self, path: str | None = None, name: str = "last.ckpt") -> Any:
         raise NotImplementedError
 
-    def _unwrap_env(self) -> BaseTask | Any:
+    def _unwrap_env(self) -> PolicyTask | Any:
         """Return the underlying environment.
 
         Algorithms that wrap the task (e.g. ``FastSACEnv``) keep a reference to the

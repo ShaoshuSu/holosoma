@@ -5,9 +5,7 @@ import dataclasses
 import pytest
 
 from holosoma.config_values import experiment
-from holosoma.train_agent import get_tyro_env_config, training_context
 from holosoma.utils.common import seeding
-from holosoma.utils.helpers import get_class
 from holosoma.utils.safe_torch_import import torch
 
 # Builds the default (isaacgym) sim on CUDA; outside tests/simulators/ so set umbrella explicitly.
@@ -23,10 +21,7 @@ def test_e2e_step() -> None:
         experiment.g1_29dof, training=dataclasses.replace(experiment.g1_29dof.training, num_envs=num_envs)
     )
 
-    tyro_env_config = get_tyro_env_config(tyro_config)
-    with training_context(tyro_config) as context, context.simulation_session(
-        get_class(tyro_config.env_class)(tyro_env_config, device=device)
-    ) as env:
+    with tyro_config.create_task() as env:
         obs_dict = env.reset_all()
         assert len(obs_dict["actor_obs"]) == num_envs
         assert len(obs_dict["critic_obs"]) == num_envs
@@ -49,4 +44,4 @@ def test_e2e_step() -> None:
         assert n_dones > 0
 
         env.reset_all()
-        assert env.average_episode_length == 0.0
+        assert env.average_episode_length == 0.0  # type: ignore[attr-defined]

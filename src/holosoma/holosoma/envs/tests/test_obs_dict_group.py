@@ -1,4 +1,4 @@
-"""Tests for dict/dtype-aware observation handling in BaseTask.
+"""Tests for dict/dtype-aware observation handling in PolicyTask.
 
 A ``concatenate=False`` observation group computes to a dict of per-term tensors. These tests pin
 that ``_clip_observations`` and ``_store_final_observations`` handle a dict group value (and a
@@ -12,19 +12,21 @@ from typing import cast
 
 import pytest
 
-from holosoma.envs.base_task.base_task import BaseTask
+from holosoma.policy_task import PolicyTask
 from holosoma.utils.safe_torch_import import torch
 
 pytestmark = pytest.mark.no_sim
 
 
-def _make_stub(obs_buf_dict: dict[str, torch.Tensor | dict[str, torch.Tensor]], clip_limit: float = 100.0) -> BaseTask:
+def _make_stub(
+    obs_buf_dict: dict[str, torch.Tensor | dict[str, torch.Tensor]], clip_limit: float = 100.0
+) -> PolicyTask:
     """Minimal object carrying just what the two methods touch."""
     stub = types.SimpleNamespace()
     stub.obs_buf_dict = obs_buf_dict
     stub.extras = {}
     stub.observation_manager = types.SimpleNamespace(cfg=types.SimpleNamespace(clip_observations=clip_limit))
-    return cast("BaseTask", stub)
+    return cast("PolicyTask", stub)
 
 
 def test_clip_observations_handles_dict_group_and_uint8() -> None:
@@ -38,7 +40,7 @@ def test_clip_observations_handles_dict_group_and_uint8() -> None:
     }
     stub = _make_stub(obs)
 
-    BaseTask._clip_observations(stub)
+    PolicyTask._clip_observations(stub)
 
     # Flat float group clipped to +/-100.
     assert torch.equal(stub.obs_buf_dict["actor_obs"], torch.tensor([[100.0, -100.0, 1.0]]))
@@ -58,7 +60,7 @@ def test_clip_observations_preserves_depth_inf_sentinel() -> None:
     obs = {"image_group": {"front_depth": depth.clone()}}
     stub = _make_stub(obs, clip_limit=100.0)
 
-    BaseTask._clip_observations(stub)
+    PolicyTask._clip_observations(stub)
 
     out = stub.obs_buf_dict["image_group"]["front_depth"]
     assert torch.isinf(out[0, 0, 0, 0])  # sentinel survives (not clamped to 100)
@@ -80,7 +82,7 @@ def test_store_final_observations_handles_dict_group() -> None:
     }
     env_ids = torch.tensor([0, 2])  # store envs 0 and 2 only
 
-    BaseTask._store_final_observations(stub, env_ids, final)
+    PolicyTask._store_final_observations(stub, env_ids, final)
 
     store = stub.extras["final_observations"]
     # Flat group: env 0 and 2 copied from final, env 1 left zero.
@@ -96,5 +98,5 @@ def test_store_final_observations_handles_dict_group() -> None:
 def test_store_final_observations_empty_is_noop() -> None:
     """An empty final-obs dict stores nothing."""
     stub = _make_stub({"actor_obs": torch.zeros(2, 2)})
-    BaseTask._store_final_observations(stub, torch.tensor([0]), {})
+    PolicyTask._store_final_observations(stub, torch.tensor([0]), {})
     assert "final_observations" not in stub.extras

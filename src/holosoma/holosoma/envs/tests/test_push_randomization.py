@@ -16,9 +16,7 @@ from typing import Any, Iterator
 import pytest
 
 from holosoma.config_values import experiment
-from holosoma.train_agent import get_tyro_env_config, training_context
 from holosoma.utils.common import seeding
-from holosoma.utils.helpers import get_class
 from holosoma.utils.safe_torch_import import torch
 
 # Targets Isaac Gym; outside tests/simulators/ so set umbrella explicitly.
@@ -35,16 +33,12 @@ def shared_env() -> Iterator[Any]:
     """
     seeding()
     num_envs = 16
-    device = "cuda"
 
     tyro_config = dataclasses.replace(
         experiment.g1_29dof, training=dataclasses.replace(experiment.g1_29dof.training, num_envs=num_envs)
     )
 
-    tyro_env_config = get_tyro_env_config(tyro_config)
-    with training_context(tyro_config) as context, context.simulation_session(
-        get_class(tyro_config.env_class)(tyro_env_config, device=device)
-    ) as env:
+    with tyro_config.create_task() as env:
         env.reset_all()
         yield env
 
