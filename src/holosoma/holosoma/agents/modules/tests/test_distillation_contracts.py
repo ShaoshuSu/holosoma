@@ -457,9 +457,8 @@ class _FakeObservationManager:
             for name, group in self.groups.items()
         }
 
-    def compute_group(self, name: str, *, modify_history: bool = True) -> Any:
-        assert not modify_history
-        return self.groups[name]
+    def term_shape(self, group_name: str, term_name: str) -> tuple[int, ...]:
+        return tuple(self.groups[group_name][term_name].shape[1:])
 
 
 class _FakeEnv:
