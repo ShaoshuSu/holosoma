@@ -204,7 +204,7 @@ simulator.hooks.add(
 )
 ```
 
-Names need not be unique — a constraint applies to every hook registered under the name, so a plugin selected in two slots is covered by one reference. Lookup is per phase: a name registered only on another phase doesn't exist from here, and an unresolvable name is dropped with a one-time warning rather than failing the run (a run that configures no cameras has no `sensors.render` to follow). A set of constraints that can't all hold raises `HookOrderError` from the next `emit` of that phase, naming the hooks in the cycle. `CLOSE` resolves the same way and then runs backwards, so a hook that declares `after` tears down *before* the hook it follows — publishers close before the runtime they publish through. For debugging, `hooks.names(phase)` returns the resolved order.
+Names need not be unique — a constraint applies to every hook registered under the name, so a plugin selected in two slots is covered by one reference. Lookup is per phase: a name registered only on another phase doesn't exist from here. Constraints are advisory, so one that matches nothing is silently not applied — a run that configures no cameras has no `sensors.render` to follow, and that's a satisfied constraint rather than a problem to report. A set of constraints that can't all hold raises `HookOrderError` from the next `emit` of that phase, naming the hooks in the cycle. `CLOSE` resolves the same way and then runs backwards, so a hook that declares `after` tears down *before* the hook it follows — publishers close before the runtime they publish through. For debugging, `hooks.names(phase)` returns the resolved order.
 
 ### Cadence
 

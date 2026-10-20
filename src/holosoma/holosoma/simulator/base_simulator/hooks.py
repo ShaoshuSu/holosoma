@@ -152,7 +152,6 @@ class HookRegistry:
         self._records: dict[Phase, list[_HookRecord]] = {phase: [] for phase in Phase}
         self._snapshots: dict[Phase, tuple[_HookRecord, ...]] = dict.fromkeys(Phase, ())
         self._stale: set[Phase] = set()
-        self._warned_missing: set[tuple[Phase, str]] = set()
         self._emitting: set[Phase] = set()
         self._closed = False
         self._base_rates: dict[Phase, float] = dict(base_rates or {})
@@ -220,10 +219,11 @@ class HookRegistry:
 
         ``after`` / ``before`` order this hook against other hooks *on the same phase*, by name: each
         name matches every hook registered under it (names need not be unique), and lookup is
-        phase-scoped — a name registered only on another phase does not exist from here and is
-        reported once as a missing constraint, not an edge. Hooks left unconstrained keep their
-        registration slot. ``CLOSE`` resolves the same way and then runs it backwards, so a hook that
-        declares ``after`` tears down before the hook it follows.
+        phase-scoped — a name registered only on another phase does not exist from here. A constraint
+        is advisory: one that matches nothing is simply not applied, silently, since a hook that
+        depends on a plugin this run did not configure is satisfied by its absence. Hooks left
+        unconstrained keep their registration slot. ``CLOSE`` resolves the same way and then runs it
+        backwards, so a hook that declares ``after`` tears down before the hook it follows.
         """
         self._assert_mutable(phase)
         resolved_name = name or self._default_name(callback)
@@ -417,13 +417,11 @@ class HookRegistry:
         """Topologically sort a phase's live hooks by their ``after``/``before`` constraints.
 
         Stable: among hooks whose constraints are already satisfied, the earliest-registered runs
-        first, so an unconstrained phase emits exactly in registration order. A constraint naming a
-        hook that is registered on this phase but currently disabled is inert (it returns when the
-        hook is re-enabled); one naming no hook on this phase at all is dropped, with a warning logged
-        once per name.
+        first, so an unconstrained phase emits exactly in registration order. A constraint that
+        matches no hook firing on this phase — absent, disabled or removed — contributes no edge and
+        is otherwise ignored; it returns on its own if the hook it names shows up later.
         """
         live = self._live(phase)
-        registered = {record.name for record in self._records[phase] if not record.removed}
         positions: dict[str, list[int]] = defaultdict(list)
         for position, record in enumerate(live):
             positions[record.name].append(position)
@@ -438,10 +436,10 @@ class HookRegistry:
 
         for position, record in enumerate(live):
             for dep in record.after:
-                for target in self._targets(phase, dep, positions, registered):
+                for target in positions.get(dep, ()):
                     link(target, position)
             for dep in record.before:
-                for target in self._targets(phase, dep, positions, registered):
+                for target in positions.get(dep, ()):
                     link(position, target)
 
         ready = [position for position in range(len(live)) if blockers[position] == 0]
@@ -462,18 +460,6 @@ class HookRegistry:
                 f"Their 'after'/'before' constraints cannot all hold."
             )
         return tuple(order)
-
-    def _targets(self, phase: Phase, dep: str, positions: Mapping[str, list[int]], registered: set[str]) -> list[int]:
-        """Positions of the live hooks a constraint name refers to, warning once if it names none."""
-        if dep in positions:
-            return positions[dep]
-        if dep not in registered and (phase, dep) not in self._warned_missing:
-            self._warned_missing.add((phase, dep))
-            logger.warning(
-                f"Hook ordering constraint on phase {phase.value!r} names {dep!r}, which no hook on "
-                f"that phase is registered under; ignoring it."
-            )
-        return []
 
     def _assert_mutable(self, phase: Phase) -> None:
         if phase in self._emitting:

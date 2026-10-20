@@ -431,7 +431,8 @@ def test_cycle_raises_on_emit() -> None:
         hooks.emit(Phase.FRAME_END)
 
 
-def test_missing_dependency_is_ignored_and_warns_once() -> None:
+def test_missing_dependency_is_ignored_silently() -> None:
+    # A constraint on something this run didn't configure is satisfied by its absence, not a problem.
     calls: list[str] = []
     hooks = HookRegistry()
     hooks.add(Phase.FRAME_END, recorder(calls, "a"), name="a", after=["nope"])
@@ -439,11 +440,9 @@ def test_missing_dependency_is_ignored_and_warns_once() -> None:
 
     with captured_logs("WARNING") as messages:
         hooks.emit(Phase.FRAME_END)
-        hooks.add(Phase.FRAME_END, recorder(calls, "c"), name="c", after=["nope"])
-        hooks.emit(Phase.FRAME_END)
 
-    assert calls == ["a", "b", "a", "b", "c"]
-    assert len([message for message in messages if "'nope'" in message]) == 1
+    assert calls == ["a", "b"]
+    assert messages == []
 
 
 def test_dependency_on_another_phase_does_not_order_or_resolve() -> None:
@@ -457,26 +456,24 @@ def test_dependency_on_another_phase_does_not_order_or_resolve() -> None:
         hooks.emit(Phase.FRAME_END)
 
     assert calls == ["a"]
-    assert any("'elsewhere'" in message for message in messages)
+    assert messages == []
 
 
-def test_disabled_dependency_is_inert_and_quiet() -> None:
+def test_disabled_dependency_is_inert_and_returns_on_enable() -> None:
     calls: list[str] = []
     hooks = HookRegistry()
     render = hooks.add(Phase.FRAME_END, recorder(calls, "render"), name="render")
     hooks.add(Phase.FRAME_END, recorder(calls, "consumer"), name="consumer", after=["render"])
 
     render.disable()
-    with captured_logs("WARNING") as messages:
-        hooks.emit(Phase.FRAME_END)
+    hooks.emit(Phase.FRAME_END)
     render.enable()
     hooks.emit(Phase.FRAME_END)
 
     assert calls == ["consumer", "render", "consumer"]
-    assert messages == []
 
 
-def test_removed_dependency_warns_as_missing() -> None:
+def test_removed_dependency_stops_constraining() -> None:
     calls: list[str] = []
     hooks = HookRegistry()
     render = hooks.add(Phase.FRAME_END, recorder(calls, "render"), name="render")
@@ -487,7 +484,7 @@ def test_removed_dependency_warns_as_missing() -> None:
         hooks.emit(Phase.FRAME_END)
 
     assert calls == ["consumer"]
-    assert any("'render'" in message for message in messages)
+    assert messages == []
 
 
 def test_close_runs_resolved_order_backwards() -> None:
