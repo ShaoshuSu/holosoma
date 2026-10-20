@@ -226,7 +226,7 @@ class IgnoresEnvIdsTerm(CounterTerm):
 def test_term_ignoring_env_ids_is_rejected_at_sizing() -> None:
     manager = _manager(_env(), terms={"counter": ObsTermCfg(func=f"{_HERE}:IgnoresEnvIdsTerm")})
 
-    with pytest.raises(ValueError, match="IgnoresEnvIdsTerm .* returned 2 rows for 0 env_ids"):
+    with pytest.raises(ValueError, match="'counter' in group 'policy': .*IgnoresEnvIdsTerm .* returned 2 rows for 0"):
         manager.get_obs_dims()
 
 

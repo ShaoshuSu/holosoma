@@ -75,7 +75,7 @@ def test_opted_out_uint8_image_is_untouched() -> None:
 def test_global_clip_on_a_term_that_is_not_2d_float_raises(value: torch.Tensor) -> None:
     terms = {"term": ObsTermCfg(func=f"{_HERE}:image")}
 
-    with pytest.raises(ValueError, match="Set global_clip=False"):
+    with pytest.raises(ValueError, match="'term' in group 'g': .*Set global_clip=False"):
         _step({"g": ObsGroupCfg(concatenate=False, terms=terms)}, image=value)
 
 

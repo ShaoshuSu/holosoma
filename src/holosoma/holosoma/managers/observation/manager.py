@@ -157,13 +157,17 @@ class ObservationManager:
 
         for term_name, term in self._terms[group_name].items():
             # The term reads, adds noise, scales and clips; history is kept per group here.
-            obs = term.observe(
-                self.env,
-                env_ids,
-                with_noise=group_cfg.enable_noise,
-                generator=self._noise_generator,
-                clip_limit=self.cfg.clip_observations,
-            )
+            try:
+                obs = term.observe(
+                    self.env,
+                    env_ids,
+                    with_noise=group_cfg.enable_noise,
+                    generator=self._noise_generator,
+                    clip_limit=self.cfg.clip_observations,
+                )
+            except ValueError as err:
+                # Terms don't know their config names; add them so the message says which entry failed.
+                raise ValueError(f"Observation term '{term_name}' in group '{group_name}': {err}") from err
             if group_cfg.history_length > 1:
                 obs = self._apply_history(group_name, term_name, obs, group_cfg, env_ids=env_ids)
 
@@ -295,7 +299,10 @@ class ObservationManager:
         tuple[int, ...]
             The term's output shape without the env axis.
         """
-        return self._terms[group_name][term_name].shape(self.env)
+        try:
+            return self._terms[group_name][term_name].shape(self.env)
+        except ValueError as err:
+            raise ValueError(f"Observation term '{term_name}' in group '{group_name}': {err}") from err
 
     def get_obs_dims(self) -> dict[str, int | dict[str, int | tuple[int, ...]]]:
         """Get observation dimensions for each group.
