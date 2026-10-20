@@ -33,7 +33,7 @@ def launcher(tmp_path, monkeypatch):
         f'pip() {{ command {executable} {shlex.quote(str(install))}; }}\npython() {{ command {executable} "$@"; }}\n'
     )
     monkeypatch.setattr(policy_e2e, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(policy_e2e, "_STOP_TIMEOUT", 0.1, raising=False)
+    monkeypatch.setattr(policy_e2e, "_STOP_TIMEOUT", 1, raising=False)
     processes = []
     launches = []
     real_popen = subprocess.Popen
@@ -66,7 +66,7 @@ def launcher(tmp_path, monkeypatch):
 
     monkeypatch.setattr(policy_e2e.subprocess, "Popen", popen)
 
-    def configure(*, output="RL FPS: 50", ignore_term=False, exit_code=None, install_code=""):
+    def configure(*, output="RL FPS: 50", ignore_term=False, close_output=False, exit_code=None, install_code=""):
         def ready_script(name):
             target = str(tmp_path / name)
             return (
@@ -85,6 +85,7 @@ def launcher(tmp_path, monkeypatch):
             f"assert Path({str(tmp_path / 'installed')!r}).exists()\n"
             + ("signal.signal(signal.SIGTERM, signal.SIG_IGN)\n" if ignore_term else "")
             + f"print({output!r}, flush=True)\n"
+            + ("os.close(1)\nos.close(2)\n" if close_output else "")
             + ready_script("policy.ready")
             + ("time.sleep(60)\n" if exit_code is None else f"sys.exit({exit_code})\n")
         )
@@ -98,10 +99,10 @@ def launcher(tmp_path, monkeypatch):
         proc.communicate(timeout=5)
 
 
-@pytest.mark.parametrize("ignore_term", [False, True])
-def test_live_policy_stops_its_child_and_preserves_output(launcher, ignore_term):
+@pytest.mark.parametrize(("ignore_term", "close_output"), [(False, False), (True, False), (True, True)])
+def test_live_policy_stops_its_child_and_preserves_output(launcher, ignore_term, close_output):
     configure, _, root = launcher
-    configure(ignore_term=ignore_term)
+    configure(ignore_term=ignore_term, close_output=close_output)
     policy_e2e.assert_run_policy_with_hsinference("synthetic", "model.onnx", timeout=0.1)
     pid = int((root / "policy.ready").read_text().split()[0])
     stat = Path(f"/proc/{pid}/stat")
