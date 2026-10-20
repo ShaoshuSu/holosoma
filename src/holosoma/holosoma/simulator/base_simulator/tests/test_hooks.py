@@ -3,7 +3,7 @@ from __future__ import annotations
 import functools
 from contextlib import contextmanager
 from types import SimpleNamespace
-from typing import Callable, Iterator
+from typing import Any, Callable, Iterator
 
 import pytest
 from loguru import logger
@@ -383,8 +383,8 @@ def test_before_runs_hook_ahead_of_its_dependency() -> None:
     assert calls == ["early", "late"]
 
 
-def test_unconstrained_hooks_keep_registration_order() -> None:
-    # Only the constrained hook moves; the rest emit earliest-registered-first as before.
+def test_unconstrained_hooks_keep_their_relative_order() -> None:
+    # 'b' and 'c' stay in that order, but both overtake the blocked 'a' rather than holding its slot.
     calls: list[str] = []
     hooks = HookRegistry()
 
@@ -613,6 +613,26 @@ def test_handle_for_another_phase_is_rejected() -> None:
     elsewhere = hooks.add(Phase.FRAME_BEGIN, lambda: None, name="elsewhere.tick")
 
     with pytest.raises(HookRegistryError, match="Constraints apply within one phase"):
+        hooks.add(Phase.FRAME_END, lambda: None, name="here.tick", after=[elsewhere])
+
+
+def test_dependency_that_is_neither_name_nor_handle_is_rejected() -> None:
+    # The overloads reject this at type-check time; the runtime guard catches whoever ignores them,
+    # since a callback or plugin object would match no hook and silence is for absent names only.
+    hooks = HookRegistry()
+    target = hooks.add(Phase.FRAME_END, lambda: None, name="target.tick")
+    deps: list[Any] = [target.name, object()]
+
+    with pytest.raises(HookRegistryError, match="pass a hook name or the HookHandle"):
+        hooks.add(Phase.FRAME_END, lambda: None, name="dependent.tick", after=deps)
+
+
+def test_handle_from_another_registry_is_rejected() -> None:
+    hooks = HookRegistry()
+    other = HookRegistry()
+    elsewhere = other.add(Phase.FRAME_END, lambda: None, name="elsewhere.tick")
+
+    with pytest.raises(HookRegistryError, match="from a different registry"):
         hooks.add(Phase.FRAME_END, lambda: None, name="here.tick", after=[elsewhere])
 
 

@@ -4,7 +4,7 @@ import functools
 import heapq
 import inspect
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Mapping, Sequence, overload
 
@@ -12,6 +12,13 @@ from loguru import logger
 from typing_extensions import Literal, Self
 
 from holosoma.config_types.frequency import DecimationLike, is_frequency_string, resolve_decimation
+
+SENSOR_RENDER_HOOK = "sensors.render"
+"""Name of the hook that refreshes the mounted-sensor buffers, for egress hooks to run ``after``.
+
+Shared by both ends of that dependency because an unmatched name is dropped silently: renaming the
+hook has to break its dependents rather than quietly stop ordering them.
+"""
 
 
 class Phase(str, Enum):
@@ -75,19 +82,25 @@ class HookCloseError(RuntimeError):
         super().__init__(f"{len(failures)} close hook(s) failed: {details}")
 
 
-@dataclass
+@dataclass(eq=False)
 class _HookRecord:
+    """One registered hook. Compared and hashed by identity, since two hooks are never interchangeable.
+
+    ``after``/``before`` can hold other records, so identity comparison also keeps ``==`` and
+    ``repr`` from recursing through a pair that references each other.
+    """
+
     phase: Phase
     callback: Callable[..., Any]
     name: str
     every: int = 1
     """Resolved emission decimation: the callback runs once per ``every`` emissions of its phase."""
-    after: tuple[str | _HookRecord, ...] = ()
+    after: tuple[str | _HookRecord, ...] = field(default=(), repr=False)
     """Same-phase hooks this one must run after: a name matches all its holders, a record just one."""
-    before: tuple[str | _HookRecord, ...] = ()
+    before: tuple[str | _HookRecord, ...] = field(default=(), repr=False)
     """Same-phase hooks this one must run before: a name matches all its holders, a record just one."""
     _counter: int = 0
-    """Emissions counted toward the next fire; only advances while enabled (disabled hooks leave the snapshot)."""
+    """Emissions counted toward the next fire; only advances while this hook is enabled."""
     enabled: bool = True
     removed: bool = False
 
@@ -142,12 +155,12 @@ class HookHandle:
 
 
 def _dep_positions(
-    dep: str | _HookRecord, positions: Mapping[str, list[int]], by_record: Mapping[int, int]
+    dep: str | _HookRecord, positions: Mapping[str, list[int]], by_record: Mapping[_HookRecord, int]
 ) -> Sequence[int]:
     """Live positions a constraint refers to: every holder of a name, or the one hook a handle is for."""
     if isinstance(dep, str):
         return positions.get(dep, ())
-    position = by_record.get(id(dep))
+    position = by_record.get(dep)
     return () if position is None else (position,)
 
 
@@ -161,7 +174,7 @@ class HookRegistry:
 
     def __init__(self, base_rates: Mapping[Phase, float] | None = None) -> None:
         self._records: dict[Phase, list[_HookRecord]] = {phase: [] for phase in Phase}
-        self._snapshots: dict[Phase, tuple[_HookRecord, ...]] = dict.fromkeys(Phase, ())
+        self._resolved: dict[Phase, tuple[_HookRecord, ...]] = dict.fromkeys(Phase, ())
         self._stale: set[Phase] = set()
         self._emitting: set[Phase] = set()
         self._closed = False
@@ -241,7 +254,7 @@ class HookRegistry:
         phase-scoped: a name registered only on another phase does not exist from here, and a handle
         for another phase is rejected outright. A name constraint is advisory — one that matches
         nothing is simply not applied, silently, since a hook depending on a plugin this run did not
-        configure is satisfied by its absence. Hooks left unconstrained keep their registration slot.
+        configure is satisfied by its absence. Unconstrained hooks keep their order relative to each other.
         ``CLOSE`` resolves the same way and then runs it backwards, so a hook that declares ``after``
         tears down before the hook it follows.
         """
@@ -265,10 +278,11 @@ class HookRegistry:
     ) -> tuple[str | _HookRecord, ...]:
         """Freeze a constraint list, resolving each handle to the single hook it refers to.
 
-        A bare string is rejected, since it would order against its own letters. A handle must be
-        for a hook on ``phase`` and from this registry: ordering is phase-scoped, and whoever holds
-        a handle already knows its phase, so a mismatch is a mistake rather than a run that happens
-        to configure things differently.
+        Every rejection here is something that would otherwise order against nothing at all, which an
+        unmatched *name* is allowed to do silently: a bare string would order against its own
+        letters, a callback or plugin object matches no hook, and a handle for another phase or
+        another registry cannot be reached from this one. Whoever holds a handle already knows where
+        it came from, so those are mistakes rather than a run configuring things differently.
         """
         if isinstance(deps, str):
             raise HookRegistryError(
@@ -277,15 +291,25 @@ class HookRegistry:
             )
         resolved: list[str | _HookRecord] = []
         for dep in deps:
-            if not isinstance(dep, HookHandle):
+            if isinstance(dep, str):
                 resolved.append(dep)
                 continue
+            if not isinstance(dep, HookHandle):
+                raise HookRegistryError(
+                    f"hook {name!r} on phase {phase.value!r}: {field_name} entry {dep!r} is a "
+                    f"{type(dep).__name__}; pass a hook name or the HookHandle that add() returned."
+                )
             target = dep._record
-            if not any(record is target for record in self._records[phase]):
+            if dep._registry is not self:
                 raise HookRegistryError(
                     f"hook {name!r} on phase {phase.value!r}: {field_name} holds a handle to "
-                    f"{target.name!r} on phase {target.phase.value!r}, which this phase cannot be "
-                    f"ordered against. Constraints apply within one phase."
+                    f"{target.name!r} from a different registry, whose hooks this one never emits."
+                )
+            if target.phase is not phase:
+                raise HookRegistryError(
+                    f"hook {name!r} on phase {phase.value!r}: {field_name} holds a handle to "
+                    f"{target.name!r} on phase {target.phase.value!r}. Constraints apply within one "
+                    f"phase; cross-phase order is the phase order itself."
                 )
             resolved.append(target)
         return tuple(resolved)
@@ -380,8 +404,10 @@ class HookRegistry:
     def names(self, phase: Phase) -> tuple[str, ...]:
         """Names of the hooks that would fire on ``phase`` now, in the order they would run.
 
-        Resolves the phase's constraints like :meth:`emit` does, so ``CLOSE`` reads back-to-front.
-        Decimated hooks are included regardless of where their counter sits.
+        Resolves the phase's constraints like :meth:`emit` does, so ``CLOSE`` reads back-to-front and
+        a phase whose constraints form a cycle raises :class:`HookOrderError` here too — the error
+        names the hooks in the cycle, which is what you were after. Decimated hooks are included
+        regardless of where their counter sits.
         """
         order = self._close_order() if phase is Phase.CLOSE else self._order(phase)
         names = tuple(record.name for record in order)
@@ -431,9 +457,9 @@ class HookRegistry:
     def _order(self, phase: Phase) -> tuple[_HookRecord, ...]:
         """Return the phase's emission order, resolving it first if a registration change invalidated it."""
         if phase in self._stale:
-            self._snapshots[phase] = self._resolve_order(phase)
+            self._resolved[phase] = self._resolve_order(phase)
             self._stale.discard(phase)
-        return self._snapshots[phase]
+        return self._resolved[phase]
 
     def _close_order(self) -> tuple[_HookRecord, ...]:
         """CLOSE's order, falling back to registration order if its constraints don't resolve.
@@ -446,8 +472,8 @@ class HookRegistry:
         except HookOrderError as exc:
             logger.error(f"{exc} Tearing down in registration order instead.")
             self._stale.discard(Phase.CLOSE)
-            self._snapshots[Phase.CLOSE] = tuple(self._live(Phase.CLOSE))
-            return self._snapshots[Phase.CLOSE]
+            self._resolved[Phase.CLOSE] = tuple(self._live(Phase.CLOSE))
+            return self._resolved[Phase.CLOSE]
 
     def _live(self, phase: Phase) -> list[_HookRecord]:
         """The phase's hooks that would fire now, in registration order."""
@@ -457,18 +483,19 @@ class HookRegistry:
         """Topologically sort a phase's live hooks by their ``after``/``before`` constraints.
 
         Stable: among hooks whose constraints are already satisfied, the earliest-registered runs
-        first, so an unconstrained phase emits exactly in registration order. A constraint that
-        matches no hook firing on this phase — absent, disabled or removed — contributes no edge and
-        is otherwise ignored; it returns on its own if the hook it names shows up later.
+        first, so an unconstrained phase emits exactly in registration order, and hooks a constraint
+        displaces keep their order relative to each other. A constraint that matches no hook firing
+        on this phase — absent, disabled or removed — contributes no edge and is otherwise ignored;
+        it returns on its own if the hook it names shows up later.
         """
         live = self._live(phase)
         positions: dict[str, list[int]] = defaultdict(list)
-        by_record: dict[int, int] = {}
+        by_record: dict[_HookRecord, int] = {}
         for position, record in enumerate(live):
             positions[record.name].append(position)
-            by_record[id(record)] = position
+            by_record[record] = position
 
-        successors: dict[int, set[int]] = {position: set() for position in range(len(live))}
+        successors: list[set[int]] = [set() for _ in live]
         blockers = [0] * len(live)
 
         def link(earlier: int, later: int) -> None:
@@ -490,7 +517,8 @@ class HookRegistry:
         while ready:
             position = heapq.heappop(ready)
             order.append(live[position])
-            for later in sorted(successors[position]):
+            # Iteration order doesn't matter: the heap decides which of the unblocked runs next.
+            for later in successors[position]:
                 blockers[later] -= 1
                 if blockers[later] == 0:
                     heapq.heappush(ready, later)

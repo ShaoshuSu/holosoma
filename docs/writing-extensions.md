@@ -196,7 +196,7 @@ A plugin's hooks attach to lifecycle phases via `add(phase, callback, *, name=No
 
 ### Ordering
 
-Within a phase, hooks run in registration order — which for plugins means the order their slots were selected, so don't rely on it. Declare what you actually need instead: `after` / `before` name the same-phase hooks you must follow or precede, and the registry orders you against them, leaving everything unconstrained in its registration slot.
+Within a phase, hooks run in registration order — which for plugins means the order their slots were selected, so don't rely on it. Declare what you actually need instead: `after` / `before` name the same-phase hooks you must follow or precede, and the registry orders you against them. Hooks with no constraints keep their order relative to each other, though a constraint can move others past them.
 
 ```python
 simulator.hooks.add(

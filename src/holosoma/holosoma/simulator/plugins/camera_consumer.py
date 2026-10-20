@@ -35,7 +35,7 @@ from holosoma.config_types.sensor import (
     IsaacSimCameraConfig,
     MujocoCameraConfig,
 )
-from holosoma.simulator.base_simulator.hooks import Phase
+from holosoma.simulator.base_simulator.hooks import SENSOR_RENDER_HOOK, Phase
 from holosoma.utils.simulator_config import SimulatorType
 
 if TYPE_CHECKING:
@@ -122,7 +122,7 @@ class CameraConsumerPlugin:
             Phase.FRAME_END,
             self._on_frame_end,
             name=f"{self._label()}.publish",
-            after=["sensors.render"],
+            after=[SENSOR_RENDER_HOOK],
         )
         simulator.hooks.add(Phase.CLOSE, self._on_close, name=f"{self._label()}.stop")
 

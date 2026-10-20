@@ -15,7 +15,7 @@ import numpy.typing as npt
 from loguru import logger
 
 from holosoma.config_types.sensor import LidarSensorConfig
-from holosoma.simulator.base_simulator.hooks import Phase
+from holosoma.simulator.base_simulator.hooks import SENSOR_RENDER_HOOK, Phase
 
 if TYPE_CHECKING:
     from holosoma.config_types.plugin import PluginConfig
@@ -53,7 +53,7 @@ class LidarConsumerPlugin:
             Phase.FRAME_END,
             self._on_frame_end,
             name=f"{type(self).__name__}.publish",
-            after=["sensors.render"],
+            after=[SENSOR_RENDER_HOOK],
         )
         simulator.hooks.add(Phase.CLOSE, self._on_close, name=f"{type(self).__name__}.stop")
 
