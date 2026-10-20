@@ -204,7 +204,16 @@ simulator.hooks.add(
 )
 ```
 
-Names need not be unique — a constraint applies to every hook registered under the name, so a plugin selected in two slots is covered by one reference. Lookup is per phase: a name registered only on another phase doesn't exist from here. Constraints are advisory, so one that matches nothing is silently not applied — a run that configures no cameras has no `sensors.render` to follow, and that's a satisfied constraint rather than a problem to report. A set of constraints that can't all hold raises `HookOrderError` from the next `emit` of that phase, naming the hooks in the cycle. `CLOSE` resolves the same way and then runs backwards, so a hook that declares `after` tears down *before* the hook it follows — publishers close before the runtime they publish through. For debugging, `hooks.names(phase)` returns the resolved order.
+**Naming.** `name` defaults to where the callback is defined — `module.QualName`, with `partial` and decorators unwrapped — so it is unique per place in the source without anyone coordinating, and most hooks need no name at all. Pass one explicitly to give a hook a short public handle others depend on (`"sensors.render"`), and for a callback that moves: a method overridden per backend derives a different default in each subclass, so a cross-backend dependency needs the explicit name.
+
+**What a reference means.** A name matches **every** hook registered under it, so one reference covers a plugin selected in several slots, and a base class registering on behalf of its subclasses is one name covering all of them. To pin one particular hook instead — ordering two instances of the same callback against each other — pass the `HookHandle` that `add` returned:
+
+```python
+first = hooks.add(Phase.FRAME_END, seeded(1), name="dr.apply")
+hooks.add(Phase.FRAME_END, self.place, name="dr.place", after=[first])
+```
+
+Lookup is per phase: a name registered only on another phase doesn't exist from here, and a handle for another phase is rejected. A name constraint is advisory, so one that matches nothing is silently not applied — a run that configures no cameras has no `sensors.render` to follow, and that's a satisfied constraint rather than a problem to report. A set of constraints that can't all hold raises `HookOrderError` from the next `emit` of that phase, naming the hooks in the cycle. `CLOSE` resolves the same way and then runs backwards, so a hook that declares `after` tears down *before* the hook it follows — publishers close before the runtime they publish through. For debugging, `hooks.names(phase)` returns the resolved order.
 
 ### Cadence
 

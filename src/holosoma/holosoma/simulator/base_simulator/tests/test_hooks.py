@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Callable, Iterator
@@ -512,6 +513,119 @@ def test_close_cycle_falls_back_to_registration_order() -> None:
 
     assert calls == ["b", "a"]
     assert any("cycle" in message for message in messages)
+
+
+class _Producer:
+    """Two instances register the same callback; a subclass override registers a different one."""
+
+    def tick(self) -> None: ...
+
+
+class _Subclass(_Producer):
+    def tick(self) -> None: ...
+
+
+def test_default_name_is_module_and_qualname() -> None:
+    hooks = HookRegistry()
+
+    handle = hooks.add(Phase.FRAME_END, _Producer().tick, name=None)
+
+    assert handle.name == f"{__name__}._Producer.tick"
+
+
+def test_instances_share_a_default_name_but_an_override_gets_its_own() -> None:
+    hooks = HookRegistry()
+
+    first = hooks.add(Phase.FRAME_END, _Producer().tick)
+    second = hooks.add(Phase.FRAME_END, _Producer().tick)
+    override = hooks.add(Phase.FRAME_END, _Subclass().tick)
+
+    assert first.name == second.name
+    assert override.name == f"{__name__}._Subclass.tick"
+
+
+def test_default_name_unwraps_partial_and_decorators() -> None:
+    def target(env_id: int) -> None: ...
+
+    @functools.wraps(target)
+    def decorated(env_id: int) -> None: ...
+
+    hooks = HookRegistry()
+
+    partial_handle = hooks.add(Phase.EPISODE_START, functools.partial(target))
+    decorated_handle = hooks.add(Phase.EPISODE_END, decorated)
+
+    expected = f"{__name__}.test_default_name_unwraps_partial_and_decorators.<locals>.target"
+    assert partial_handle.name.startswith(expected)
+    assert decorated_handle.name.startswith(expected)
+
+
+def test_lambdas_on_different_lines_get_distinct_default_names() -> None:
+    hooks = HookRegistry()
+
+    first = hooks.add(Phase.FRAME_END, lambda: None)
+    second = hooks.add(Phase.FRAME_END, lambda: None)
+
+    assert first.name != second.name
+
+
+def test_one_name_reference_covers_every_hook_sharing_the_default() -> None:
+    # The multi-slot case: one callback registered twice, one reference orders against both.
+    calls: list[str] = []
+    hooks = HookRegistry()
+
+    class Egress:
+        def __init__(self, label: str) -> None:
+            self.label = label
+
+        def publish(self) -> None:
+            calls.append(self.label)
+
+    head = hooks.add(Phase.FRAME_END, Egress("head").publish)
+    waist = hooks.add(Phase.FRAME_END, Egress("waist").publish)
+    assert head.name == waist.name  # one place in the source, so one name
+    hooks.add(Phase.FRAME_END, recorder(calls, "consumer"), name="consumer", after=[head.name])
+
+    hooks.emit(Phase.FRAME_END)
+
+    assert calls == ["head", "waist", "consumer"]
+
+
+def test_handle_orders_against_one_instance_not_its_namesake() -> None:
+    # A.foo(seed=1) -> B.foo -> A.foo(seed=2): same callback twice, ordered by handle.
+    calls: list[str] = []
+    hooks = HookRegistry()
+
+    def seeded(seed: int) -> Callable[[], None]:
+        return lambda: calls.append(f"a{seed}")
+
+    first = hooks.add(Phase.FRAME_END, seeded(1), name="a.foo")
+    second = hooks.add(Phase.FRAME_END, seeded(2), name="a.foo")
+    hooks.add(Phase.FRAME_END, recorder(calls, "b"), name="b.foo", after=[first], before=[second])
+
+    hooks.emit(Phase.FRAME_END)
+
+    assert calls == ["a1", "b", "a2"]
+
+
+def test_handle_for_another_phase_is_rejected() -> None:
+    hooks = HookRegistry()
+    elsewhere = hooks.add(Phase.FRAME_BEGIN, lambda: None, name="elsewhere.tick")
+
+    with pytest.raises(HookRegistryError, match="Constraints apply within one phase"):
+        hooks.add(Phase.FRAME_END, lambda: None, name="here.tick", after=[elsewhere])
+
+
+def test_handle_to_a_removed_hook_stops_constraining() -> None:
+    calls: list[str] = []
+    hooks = HookRegistry()
+    render = hooks.add(Phase.FRAME_END, recorder(calls, "render"), name="render.one")
+    hooks.add(Phase.FRAME_END, recorder(calls, "consumer"), name="consumer.one", after=[render])
+
+    render.remove()
+    hooks.emit(Phase.FRAME_END)
+
+    assert calls == ["consumer"]
 
 
 def test_names_reports_resolved_order_per_phase() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import heapq
 import inspect
 from collections import defaultdict
@@ -81,10 +82,10 @@ class _HookRecord:
     name: str
     every: int = 1
     """Resolved emission decimation: the callback runs once per ``every`` emissions of its phase."""
-    after: tuple[str, ...] = ()
-    """Names of same-phase hooks this one must run after."""
-    before: tuple[str, ...] = ()
-    """Names of same-phase hooks this one must run before."""
+    after: tuple[str | _HookRecord, ...] = ()
+    """Same-phase hooks this one must run after: a name matches all its holders, a record just one."""
+    before: tuple[str | _HookRecord, ...] = ()
+    """Same-phase hooks this one must run before: a name matches all its holders, a record just one."""
     _counter: int = 0
     """Emissions counted toward the next fire; only advances while enabled (disabled hooks leave the snapshot)."""
     enabled: bool = True
@@ -140,6 +141,16 @@ class HookHandle:
         self._registry._remove(self._record)
 
 
+def _dep_positions(
+    dep: str | _HookRecord, positions: Mapping[str, list[int]], by_record: Mapping[int, int]
+) -> Sequence[int]:
+    """Live positions a constraint refers to: every holder of a name, or the one hook a handle is for."""
+    if isinstance(dep, str):
+        return positions.get(dep, ())
+    position = by_record.get(id(dep))
+    return () if position is None else (position,)
+
+
 class HookRegistry:
     """Small lifecycle hook registry: registration order, refined by declared ``after``/``before``.
 
@@ -164,8 +175,8 @@ class HookRegistry:
         *,
         name: str | None = None,
         every: DecimationLike = 1,
-        after: Sequence[str] = (),
-        before: Sequence[str] = (),
+        after: Sequence[str | HookHandle] = (),
+        before: Sequence[str | HookHandle] = (),
     ) -> HookHandle: ...
 
     @overload
@@ -176,8 +187,8 @@ class HookRegistry:
         *,
         name: str | None = None,
         every: DecimationLike = 1,
-        after: Sequence[str] = (),
-        before: Sequence[str] = (),
+        after: Sequence[str | HookHandle] = (),
+        before: Sequence[str | HookHandle] = (),
     ) -> HookHandle: ...
 
     @overload
@@ -188,8 +199,8 @@ class HookRegistry:
         *,
         name: str | None = None,
         every: DecimationLike = 1,
-        after: Sequence[str] = (),
-        before: Sequence[str] = (),
+        after: Sequence[str | HookHandle] = (),
+        before: Sequence[str | HookHandle] = (),
     ) -> HookHandle: ...
 
     def add(
@@ -199,8 +210,8 @@ class HookRegistry:
         *,
         name: str | None = None,
         every: DecimationLike = 1,
-        after: Sequence[str] = (),
-        before: Sequence[str] = (),
+        after: Sequence[str | HookHandle] = (),
+        before: Sequence[str | HookHandle] = (),
     ) -> HookHandle:
         """Register a hook callback for a lifecycle phase.
 
@@ -217,13 +228,22 @@ class HookRegistry:
         known base rate; event phases (episode/close) accept only int decimations. Default ``1`` fires
         every emission.
 
-        ``after`` / ``before`` order this hook against other hooks *on the same phase*, by name: each
-        name matches every hook registered under it (names need not be unique), and lookup is
-        phase-scoped — a name registered only on another phase does not exist from here. A constraint
-        is advisory: one that matches nothing is simply not applied, silently, since a hook that
-        depends on a plugin this run did not configure is satisfied by its absence. Hooks left
-        unconstrained keep their registration slot. ``CLOSE`` resolves the same way and then runs it
-        backwards, so a hook that declares ``after`` tears down before the hook it follows.
+        ``name`` defaults to where the callback is defined (``module.QualName``; see
+        :meth:`_default_name`), which is unique per place in the source without anyone coordinating.
+        Pass one explicitly to give a hook a short public handle for others to depend on
+        (``"sensors.render"``), which is also the only way to name a hook whose callback moves —
+        a backend override, for instance, derives a different default per subclass.
+
+        ``after`` / ``before`` order this hook against other hooks *on the same phase*. An entry is
+        either a name, which matches **every** hook registered under it — so one reference covers a
+        plugin selected in several slots — or a :class:`HookHandle`, which pins exactly the one hook
+        it came from, for ordering two instances of the same callback against each other. Lookup is
+        phase-scoped: a name registered only on another phase does not exist from here, and a handle
+        for another phase is rejected outright. A name constraint is advisory — one that matches
+        nothing is simply not applied, silently, since a hook depending on a plugin this run did not
+        configure is satisfied by its absence. Hooks left unconstrained keep their registration slot.
+        ``CLOSE`` resolves the same way and then runs it backwards, so a hook that declares ``after``
+        tears down before the hook it follows.
         """
         self._assert_mutable(phase)
         resolved_name = name or self._default_name(callback)
@@ -240,15 +260,35 @@ class HookRegistry:
         self._invalidate(phase)
         return HookHandle(self, record)
 
-    @staticmethod
-    def _normalize_deps(deps: Sequence[str], field_name: str, name: str, phase: Phase) -> tuple[str, ...]:
-        """Freeze a constraint list, rejecting a bare string (which would order against its letters)."""
+    def _normalize_deps(
+        self, deps: Sequence[str | HookHandle], field_name: str, name: str, phase: Phase
+    ) -> tuple[str | _HookRecord, ...]:
+        """Freeze a constraint list, resolving each handle to the single hook it refers to.
+
+        A bare string is rejected, since it would order against its own letters. A handle must be
+        for a hook on ``phase`` and from this registry: ordering is phase-scoped, and whoever holds
+        a handle already knows its phase, so a mismatch is a mistake rather than a run that happens
+        to configure things differently.
+        """
         if isinstance(deps, str):
             raise HookRegistryError(
                 f"hook {name!r} on phase {phase.value!r}: {field_name}={deps!r} is a string; "
                 f"pass a sequence of hook names, e.g. {field_name}=[{deps!r}]."
             )
-        return tuple(deps)
+        resolved: list[str | _HookRecord] = []
+        for dep in deps:
+            if not isinstance(dep, HookHandle):
+                resolved.append(dep)
+                continue
+            target = dep._record
+            if not any(record is target for record in self._records[phase]):
+                raise HookRegistryError(
+                    f"hook {name!r} on phase {phase.value!r}: {field_name} holds a handle to "
+                    f"{target.name!r} on phase {target.phase.value!r}, which this phase cannot be "
+                    f"ordered against. Constraints apply within one phase."
+                )
+            resolved.append(target)
+        return tuple(resolved)
 
     @staticmethod
     def _check_arity(phase: Phase, callback: Callable[..., Any], name: str) -> None:
@@ -423,8 +463,10 @@ class HookRegistry:
         """
         live = self._live(phase)
         positions: dict[str, list[int]] = defaultdict(list)
+        by_record: dict[int, int] = {}
         for position, record in enumerate(live):
             positions[record.name].append(position)
+            by_record[id(record)] = position
 
         successors: dict[int, set[int]] = {position: set() for position in range(len(live))}
         blockers = [0] * len(live)
@@ -436,10 +478,10 @@ class HookRegistry:
 
         for position, record in enumerate(live):
             for dep in record.after:
-                for target in positions.get(dep, ()):
+                for target in _dep_positions(dep, positions, by_record):
                     link(target, position)
             for dep in record.before:
-                for target in positions.get(dep, ()):
+                for target in _dep_positions(dep, positions, by_record):
                     link(position, target)
 
         ready = [position for position in range(len(live)) if blockers[position] == 0]
@@ -467,4 +509,23 @@ class HookRegistry:
 
     @staticmethod
     def _default_name(callback: Callable[..., Any]) -> str:
-        return getattr(callback, "__qualname__", repr(callback))
+        """Derive a name from where the callback is defined: ``module.QualName``.
+
+        ``partial`` and decorators are unwrapped and a bound method reduces to its function, so every
+        instance of a class derives the same name — one place in the source, however many hooks —
+        while a subclass that overrides the method derives its own. A lambda or a closure also gets
+        its definition line appended, because their qualnames don't identify them on their own.
+        """
+        target: Any = callback
+        while isinstance(target, functools.partial):
+            target = target.func
+        target = getattr(inspect.unwrap(target), "__func__", inspect.unwrap(target))
+        qualname = getattr(target, "__qualname__", None)
+        if qualname is None:
+            return repr(callback)
+        module = getattr(target, "__module__", None)
+        derived = f"{module}.{qualname}" if module else qualname
+        code = getattr(target, "__code__", None)
+        if "<" in qualname and code is not None:
+            derived = f"{derived}:{code.co_firstlineno}"
+        return derived
