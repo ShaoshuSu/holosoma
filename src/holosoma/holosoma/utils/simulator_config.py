@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Self, cast
+from typing import cast
+
+from typing_extensions import Self
 
 import holosoma.config_types.simulator
 

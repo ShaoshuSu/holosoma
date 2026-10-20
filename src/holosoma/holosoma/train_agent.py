@@ -9,9 +9,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Self, TypedDict, cast
+from typing import Any, TypedDict, cast
 
 from loguru import logger
+from typing_extensions import Self
 
 from holosoma.agents.distillation.checkpoint import infer_num_teachers_from_checkpoint
 from holosoma.config_types.env import get_tyro_env_config

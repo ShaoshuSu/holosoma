@@ -7,7 +7,7 @@ name = "holosoma"
 version = "0.0.3"
 description = "Holosoma: core training framework for humanoid robot reinforcement learning (locomotion + whole-body tracking)."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 authors = [{ name = "Amazon FAR Team" }]
 license = { text = "Apache-2.0" }
 keywords = ["humanoid", "robotics", "reinforcement-learning", "locomotion", "whole-body-tracking", "sim2real"]

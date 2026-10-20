@@ -67,9 +67,3 @@ module-name = "holosoma_inference"
 module-root = ""
 # Ship non-.py package data (py.typed marker + any config yamls) inside the wheel.
 source-include = ["holosoma_inference/py.typed", "holosoma_inference/**/*.yaml"]
-
-# Inherit the repo-wide ruff config, but lint at this package's own floor: the robot runs 3.10,
-# so py311-only rewrites (typing.Self, datetime.UTC, ...) must not be applied here.
-[tool.ruff]
-extend = "../../pyproject.toml"
-target-version = "py310"

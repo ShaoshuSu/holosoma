@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from os import getenv
 
 import wandb
@@ -288,7 +288,7 @@ def create_nightly_report(gh_run_id: str, hours: int = 24, publish: bool = False
     # Create report blocks
     report_blocks = [
         wr.H1("Nightly Training Report"),
-        wr.P(f"Automated report generated on {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')} UTC"),
+        wr.P(f"Automated report generated on {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC"),
         wr.P(f"This report contains analysis of {num_runs} nightly training runs across {num_exps} experiments."),
     ]
 
@@ -315,7 +315,7 @@ def create_nightly_report(gh_run_id: str, hours: int = 24, publish: bool = False
     print("\nCreating report...")
 
     title_suffix = f" (GHA Run {gh_run_id})" if gh_run_id else ""
-    report_title = f"Nightly Training Report - {datetime.now(UTC).strftime('%Y-%m-%d')}{title_suffix}"
+    report_title = f"Nightly Training Report - {datetime.now(timezone.utc).strftime('%Y-%m-%d')}{title_suffix}"
 
     report = wr.Report(
         entity=WANDB_ENTITY,

@@ -261,7 +261,7 @@ class MultiMotionLoader:
             try:
                 loader = MotionLoader(mf, robot_body_names, robot_joint_names, device=device)
                 loaders.append(loader)
-            except (KeyError, AssertionError, ValueError) as e:
+            except (KeyError, AssertionError, ValueError) as e:  # noqa: PERF203
                 # Skip files with incompatible format (e.g., missing body_names, wrong body count)
                 skipped += 1
                 if skipped <= 3:

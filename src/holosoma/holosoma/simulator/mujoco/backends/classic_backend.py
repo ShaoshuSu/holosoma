@@ -197,7 +197,7 @@ class ClassicBackend(IMujocoBackend):
             for data_type, renderer in renderers.items():
                 try:
                     renderer.close()
-                except Exception as exc:
+                except Exception as exc:  # noqa: PERF203 - close every renderer before reporting failures.
                     failures.append(f"{camera}/{data_type}: {exc!r}")
         self._mj_renderers.clear()
         self._cam_ids.clear()

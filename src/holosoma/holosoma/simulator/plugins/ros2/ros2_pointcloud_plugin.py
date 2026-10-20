@@ -157,7 +157,7 @@ class ROS2PointCloudPlugin(LidarConsumerPlugin):
         for worker in self._workers.values():
             try:
                 worker.stop()
-            except Exception as exc:
+            except Exception as exc:  # noqa: PERF203 - stop every worker before reporting failures.
                 failures.append(str(exc))
         if failures:
             raise RuntimeError("; ".join(failures))

@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import itertools
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, ClassVar, cast
+from typing import Any, ClassVar, cast
 
 import torch
 import torch.nn.functional as F

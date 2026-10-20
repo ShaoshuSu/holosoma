@@ -17,10 +17,10 @@ import traceback
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from types import TracebackType
-from typing import Any, Self, TypeVar
+from typing import Any, TypeVar
 
 from loguru import logger
-from typing_extensions import ParamSpec
+from typing_extensions import ParamSpec, Self
 
 from holosoma.config_types.env import get_tyro_env_config
 from holosoma.config_types.experiment import ExperimentConfig

@@ -276,7 +276,7 @@ class CameraController:
                 self.robot_body_id = self.simulator.find_rigid_body_indice(name)
                 logger.debug(f"Camera controller resolved tracking body: {name}")
                 return
-            except Exception:  # noqa: S112
+            except Exception:  # noqa: S112, PERF203
                 continue
 
         # If no names worked, fail with helpful error

@@ -84,7 +84,7 @@ def _load_entrypoint_group(
             loader = ep.load()
             _validate_loader(loader, kind=kind)
             loaders.append(_RegisteredLoader(loader, ep.value))
-        except Exception as exc:
+        except Exception as exc:  # noqa: PERF203 - each entry point must fail independently
             logger.warning(f"Skipping path loader from {ep.value!r}: {exc}")
 
 

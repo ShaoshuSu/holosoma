@@ -55,7 +55,7 @@ def _warn_env_class_deprecated(usage: str) -> None:
         f"for env-based entry points. This {usage} becomes an error after "
         f"{_ENV_CLASS_REMOVAL_DATE.isoformat()}."
     )
-    if datetime.datetime.now(tz=datetime.UTC).date() > _ENV_CLASS_REMOVAL_DATE:
+    if datetime.datetime.now(tz=datetime.timezone.utc).date() > _ENV_CLASS_REMOVAL_DATE:
         raise RuntimeError(message)
     # FutureWarning: shown by default (DeprecationWarning is filtered outside __main__).
     warnings.warn(message, FutureWarning, stacklevel=3)

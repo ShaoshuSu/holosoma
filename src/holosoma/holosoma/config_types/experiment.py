@@ -42,7 +42,7 @@ from holosoma.utils.config_registry import UseRegistry
 
 
 def now_timestamp() -> str:
-    return datetime.datetime.now(tz=datetime.UTC).strftime("%Y%m%d_%H%M%S")
+    return datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
 @dataclass(frozen=True)

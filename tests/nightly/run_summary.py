@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum, auto
 from os import getenv
 from typing import NamedTuple
@@ -239,7 +239,7 @@ def get_last_nightly_runs() -> list[NightlyRun]:
     nightly_projects = [project for project in all_projects if project.name.startswith("nightly")]
 
     # Get runs from the last 24 hours
-    since_time = datetime.now(UTC) - timedelta(hours=24)
+    since_time = datetime.now(timezone.utc) - timedelta(hours=24)
     since_iso = since_time.isoformat()
 
     # GHA run ids filter
