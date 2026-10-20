@@ -31,7 +31,7 @@ class CounterTerm(ObservationTermBase):
         else:
             self.count[env_ids] = 0
 
-    def __call__(self, env: Any, env_ids: torch.Tensor | None = None, **kwargs: Any) -> torch.Tensor:
+    def read(self, env: Any, env_ids: torch.Tensor | None = None, **kwargs: Any) -> torch.Tensor:
         if env_ids is None:
             self.count += 1
             return self.count.unsqueeze(1)
@@ -172,9 +172,9 @@ def test_noise_follows_the_global_seed() -> None:
 class LeadingViewTerm(CounterTerm):
     """Counter that serves the first ``len(env_ids)`` envs as a view of its buffer."""
 
-    def __call__(self, env: Any, env_ids: torch.Tensor | None = None, **kwargs: Any) -> torch.Tensor:
+    def read(self, env: Any, env_ids: torch.Tensor | None = None, **kwargs: Any) -> torch.Tensor:
         if env_ids is None:
-            return super().__call__(env)
+            return super().read(env)
         self.count[env_ids] += 1
         return self.count[: len(env_ids)].unsqueeze(1)
 
@@ -190,18 +190,30 @@ def test_terminal_obs_survive_reset_of_term_state() -> None:
     assert terminal.tolist() == [[2.0]]
 
 
-class OldContractTerm(CounterTerm):
-    """A term written before env_ids: swallows it and computes every env."""
+class IgnoresEnvIdsTerm(CounterTerm):
+    """A term that swallows env_ids and computes every env."""
 
-    def __call__(self, env: Any, **kwargs: Any) -> torch.Tensor:  # type: ignore[override]
-        return super().__call__(env)
+    def read(self, env: Any, env_ids: torch.Tensor | None = None, **kwargs: Any) -> torch.Tensor:
+        return super().read(env)
 
 
-def test_old_contract_term_is_rejected_at_sizing() -> None:
-    manager = _manager(_env(), terms={"counter": ObsTermCfg(func=f"{_HERE}:OldContractTerm")})
+def test_term_ignoring_env_ids_is_rejected_at_sizing() -> None:
+    manager = _manager(_env(), terms={"counter": ObsTermCfg(func=f"{_HERE}:IgnoresEnvIdsTerm")})
 
-    with pytest.raises(ValueError, match="'counter' in group 'policy' returned 2 rows for 0 env_ids"):
+    with pytest.raises(ValueError, match="IgnoresEnvIdsTerm .* returned 2 rows for 0 env_ids"):
         manager.get_obs_dims()
+
+
+class CallOnlyTerm(ObservationTermBase):
+    """A term written against the old API: defines __call__ but not read."""
+
+    def __call__(self, env: Any, **kwargs: Any) -> torch.Tensor:
+        return torch.zeros(NUM_ENVS, 1)
+
+
+def test_term_without_read_is_rejected_at_construction() -> None:
+    with pytest.raises(TypeError, match="abstract"):
+        _manager(_env(), terms={"old": ObsTermCfg(func=f"{_HERE}:CallOnlyTerm")})
 
 
 def test_get_obs_dims_does_not_advance_stateful_terms() -> None:
@@ -215,8 +227,8 @@ def assert_advances_only_env_ids(make_term: Callable[[], ObservationTermBase], e
     """Check a stateful term's contract: advancing env 0 leaves env 1 as a fresh instance's."""
     term, fresh = make_term(), make_term()
     for _ in range(steps):
-        term(env, env_ids=torch.tensor([0]))
-    assert torch.equal(term(env)[1], fresh(env)[1])
+        term.read(env, env_ids=torch.tensor([0]))
+    assert torch.equal(term.read(env)[1], fresh.read(env)[1])
 
 
 def test_counter_term_honours_env_ids() -> None:

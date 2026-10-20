@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from collections import deque
-from typing import Any, Callable, Sequence
+from typing import Any, Sequence
 
 import torch
 
 from holosoma.config_types.observation import ObservationManagerCfg, ObsGroupCfg, ObsTermCfg
 from holosoma.managers.utils import resolve_callable
 
-from .base import ObservationTermBase
+from .base import FunctionTerm, ObservationTermBase
 
 
 class ObservationManager:
@@ -37,9 +37,8 @@ class ObservationManager:
         self.device = device
         self.logger = getattr(env, "logger", None)
 
-        # Storage for resolved functions and stateful terms
-        self._term_funcs: dict[str, dict[str, Callable[..., torch.Tensor]]] = {}
-        self._term_instances: dict[str, dict[str, ObservationTermBase]] = {}
+        # Term objects: group_name -> term_name -> term (plain functions wrapped in FunctionTerm)
+        self._terms: dict[str, dict[str, ObservationTermBase]] = {}
 
         # History buffers: group_name -> term_name -> deque
         self._history_buffers: dict[str, dict[str, deque[torch.Tensor]]] = {}
@@ -54,7 +53,6 @@ class ObservationManager:
         self._frame_ready = False
         self._terminal_ran = False
         self._terminal_rows = torch.zeros(env.num_envs, dtype=torch.bool, device=device)
-        self._no_envs = torch.zeros(0, dtype=torch.long, device=device)
 
         # Initialize groups
         self._initialize_groups()
@@ -62,22 +60,15 @@ class ObservationManager:
     def _initialize_groups(self) -> None:
         """Initialize observation groups and resolve term functions."""
         for group_name, group_cfg in self.cfg.groups.items():
-            self._term_funcs[group_name] = {}
-            self._term_instances[group_name] = {}
+            self._terms[group_name] = {}
             self._history_buffers[group_name] = {}
 
             for term_name, term_cfg in group_cfg.terms.items():
-                # Resolve function
                 func = resolve_callable(term_cfg.func, context="observation term")
-
-                # Check if it's a class (stateful) or function (stateless)
                 if isinstance(func, type) and issubclass(func, ObservationTermBase):
-                    # Stateful term - instantiate
-                    instance = func(term_cfg, self.env)
-                    self._term_instances[group_name][term_name] = instance
+                    self._terms[group_name][term_name] = func(term_cfg, self.env)
                 else:
-                    # Stateless function
-                    self._term_funcs[group_name][term_name] = func
+                    self._terms[group_name][term_name] = FunctionTerm(term_cfg, self.env, func)
 
                 # Initialize history buffer if needed (using group-level history_length)
                 if group_cfg.history_length > 1:
@@ -255,23 +246,7 @@ class ObservationManager:
         torch.Tensor
             Observation tensor with shape ``[num_envs, obs_dim]``, or ``[len(env_ids), obs_dim]``.
         """
-        # Check if stateful or stateless
-        if term_name in self._term_instances[group_name]:
-            # Stateful term
-            instance = self._term_instances[group_name][term_name]
-            obs = instance(self.env, env_ids=env_ids, **term_cfg.params)
-            if env_ids is not None and obs.shape[0] != len(env_ids):
-                raise ValueError(
-                    f"Stateful observation term '{term_name}' in group '{group_name}' returned {obs.shape[0]} rows "
-                    f"for {len(env_ids)} env_ids; ObservationTermBase.__call__ must compute and advance only env_ids."
-                )
-            # Clone even for a row subset: the term may return a view of state that reset() then overwrites.
-            return obs.clone()
-
-        # Stateless function
-        func = self._term_funcs[group_name][term_name]
-        obs = func(self.env, **term_cfg.params)
-        return obs.clone() if env_ids is None else obs[env_ids]
+        return self._terms[group_name][term_name].observe(self.env, env_ids, **term_cfg.params)
 
     def _apply_noise(self, obs: torch.Tensor, noise_scale: float) -> torch.Tensor:
         """Apply uniform observation noise.
@@ -404,10 +379,27 @@ class ObservationManager:
                     for history in buffer:
                         history[env_ids_tensor] = 0.0
 
-        # Reset stateful term instances
-        for group_instances in self._term_instances.values():
-            for instance in group_instances.values():
-                instance.reset(env_ids_tensor)
+        for group_terms in self._terms.values():
+            for term in group_terms.values():
+                term.reset(env_ids_tensor)
+
+    def term_shape(self, group_name: str, term_name: str) -> tuple[int, ...]:
+        """Per-env output shape of one term, measured without advancing it.
+
+        Parameters
+        ----------
+        group_name : str
+            Name of the observation group.
+        term_name : str
+            Name of the term within the group.
+
+        Returns
+        -------
+        tuple[int, ...]
+            The term's output shape without the env axis.
+        """
+        term_cfg = self.cfg.groups[group_name].terms[term_name]
+        return self._terms[group_name][term_name].shape(self.env, **term_cfg.params)
 
     def get_obs_dims(self) -> dict[str, int | dict[str, int | tuple[int, ...]]]:
         """Get observation dimensions for each group.
@@ -428,16 +420,15 @@ class ObservationManager:
             if group_cfg.concatenate:
                 # Sum up all term dimensions
                 total_dim = 0
-                for term_name, term_cfg in group_cfg.terms.items():
-                    # Read the term for zero envs to get its dimension without advancing it
-                    obs = self._compute_term(group_name, term_name, term_cfg, env_ids=self._no_envs)
-                    if obs.ndim != 2:
+                for term_name in group_cfg.terms:
+                    shape = self.term_shape(group_name, term_name)
+                    if len(shape) != 1:
                         raise ValueError(
                             f"Observation term '{term_name}' in concatenate=True group '{group_name}' must be "
-                            f"2-D [num_envs, feature], got shape {tuple(obs.shape)}. Image terms "
+                            f"2-D [num_envs, feature], got per-env shape {shape}. Image terms "
                             f"(e.g. camera_rgb/camera_depth) belong only in a concatenate=False (dict) group."
                         )
-                    term_dim = obs.shape[1]
+                    term_dim = shape[0]
 
                     # Account for history at group level
                     if group_cfg.history_length > 1:
@@ -449,9 +440,9 @@ class ObservationManager:
                 # Return dict of per-term feature sizes: an int for 2-D terms, or the
                 # trailing-dim shape tuple for image terms ([N, H, W, C] -> (H, W, C)).
                 term_dims: dict[str, int | tuple[int, ...]] = {}
-                for term_name, term_cfg in group_cfg.terms.items():
-                    obs = self._compute_term(group_name, term_name, term_cfg, env_ids=self._no_envs)
-                    term_dims[term_name] = obs.shape[1] if obs.ndim == 2 else tuple(obs.shape[1:])
+                for term_name in group_cfg.terms:
+                    shape = self.term_shape(group_name, term_name)
+                    term_dims[term_name] = shape[0] if len(shape) == 1 else shape
                 dims[group_name] = term_dims
         return dims
 
@@ -461,7 +452,7 @@ class ObservationManager:
         One entry per term, in concatenation order: groups as given, terms sorted by name
         within a group (as in :meth:`step`). A term occupies ``dim * history_length``
         consecutive values, oldest frame first, with zeros for frames not yet observed. Like
-        :meth:`get_obs_dims`, each term is read for zero envs to measure ``dim``.
+        :meth:`get_obs_dims`, ``dim`` comes from :meth:`term_shape`.
 
         Parameters
         ----------
@@ -481,13 +472,13 @@ class ObservationManager:
                 raise ValueError(f"Observation group '{group_name}' is not concatenated, so it has no flat layout.")
             for term_name in sorted(group_cfg.terms):
                 term_cfg = group_cfg.terms[term_name]
-                obs = self._compute_term(group_name, term_name, term_cfg, env_ids=self._no_envs)
+                dim = self.term_shape(group_name, term_name)[0]
                 layout.append(
                     {
                         "group": group_name,
                         "name": term_name,
                         "func": term_cfg.func,
-                        "dim": obs.shape[1],
+                        "dim": dim,
                         "history_length": group_cfg.history_length,
                         "scale": term_cfg.scale,
                         "clip": term_cfg.clip,
