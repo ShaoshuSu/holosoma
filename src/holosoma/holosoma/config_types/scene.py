@@ -26,10 +26,10 @@ _FORBID_EXTRA = ConfigDict(extra="forbid")
 
 @dataclass(frozen=True, config=_FORBID_EXTRA)
 class PhysXPhysicsConfig:
-    """Rigid-body solver knobs that PhysX interprets identically under BOTH Isaac backends.
+    """Rigid-body solver knobs for the PhysX solver (IsaacSim).
 
-    IsaacSim runs the PhysX solver and reads these directly, so they live
-    in ONE shared sub-config referenced by both.
+    They sit in their own sub-config, separate from IsaacSim's material settings, because they are
+    PhysX solver semantics rather than surface properties.
     """
 
     linear_damping: float = 0.1
@@ -130,7 +130,7 @@ class PhysicsConfig:
     pushed into a backend-specific sub-config, so a field never silently means different things
     on different backends:
 
-    - :class:`PhysXPhysicsConfig` (``physx``): solver damping / velocity limits, shared by BOTH
+    - :class:`PhysXPhysicsConfig` (``physx``): solver damping / velocity limits, read by
       IsaacSim (PhysX semantics).
     - :class:`IsaacSimPhysicsConfig` (``isaacsim``): IsaacSim rigid-body material.
     - :class:`MujocoPhysicsConfig` (``mujoco``): MuJoCo geom friction/solver props.

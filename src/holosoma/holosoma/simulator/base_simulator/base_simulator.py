@@ -888,7 +888,7 @@ class BaseSimulator:
         it zero-pads the 7-wide pose to a full 13-wide state (static/kinematic bodies ignore the
         velocity columns, moving by pose target, not commanded velocity) and forwards. Works
         the same on every backend (MuJoCo via body_pos/body_quat + forward-kinematics; IsaacSim
-        via the fixed-base root-state teleport; IsaacSim via the kinematic rigid-body write).
+        via the kinematic rigid-body write).
 
         Parameters
         ----------

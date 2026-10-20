@@ -573,7 +573,6 @@ def _randomize_object_freejoint_damping(
 
     ``damping_range`` is a config range value ([lo, hi] pair or spec dict), honored on BOTH MuJoCo (via
     ``randomize_field``) and IsaacSim (the live-USD writer).
-    raises regardless.
     """
     idx = _ensure_env_ids_tensor(env, env_ids)
     if idx.numel() == 0:
@@ -626,8 +625,7 @@ def randomize_object_linear_damping_startup(
     """Randomize free-body LINEAR (translational) damping — drag on linear velocity.
 
     MuJoCo (Classic + Warp, via freejoint ``dof_damping``) and IsaacSim (via the live USD
-    ``PhysxRigidBodyAPI.linearDamping``). Accepts body
-    damping only at asset import — see the error). One value per env is applied as the body's
+    ``PhysxRigidBodyAPI.linearDamping``). One value per env is applied as the body's
     single linear-damping scalar (on MuJoCo, shared across the 3 translational freejoint DOFs), so
     the concept matches PhysX on every backend. Targets every registered free body by default. On
     the WarpBackend keep ``damping_range`` <= ~0.05 (freejoint dof_damping diverges above that at
@@ -664,9 +662,8 @@ def randomize_object_angular_damping_startup(
 ) -> None:
     """Randomize free-body ANGULAR (rotational) damping — drag on angular velocity.
 
-    MuJoCo (Classic + Warp) and IsaacSim (via the live USD ``PhysxRigidBodyAPI.angularDamping``);
-    One value per env is
-    applied as the body's single angular-damping scalar (on MuJoCo, shared across the 3 rotational
+    MuJoCo (Classic + Warp) and IsaacSim (via the live USD ``PhysxRigidBodyAPI.angularDamping``).
+    One value per env is applied as the body's single angular-damping scalar (on MuJoCo, shared across the 3 rotational
     freejoint DOFs), matching PhysX on every backend. WarpBackend stable band <= ~0.05.
 
     ``damping_range`` is a config range value — a ``[lo, hi]`` pair (uniform) or a spec dict — honored on

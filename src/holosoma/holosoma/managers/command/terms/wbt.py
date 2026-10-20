@@ -831,12 +831,11 @@ class MotionCommand(CommandTermBase):
 
         # Issue:
         # ------------------------------------------------------------
-        # Immediately after reset (self._env.episode_length_buf == 0), calling
-        # simulator.set_actor_root_state_tensor and simulator.set_dof_state_tensor will reset
-        # the robot_root_pos_w and robot_root_quat_w successfully.
-        # However, the robot_body_pos_w and robot_body_quat_w are not updated successfully,
-        # (since kinematic forward has not been applied yet).
-        # Therefore, using robot_ref_pos_w and robot_ref_quat_w as reference body poses is not resetted correctly.
+        # Immediately after reset (self._env.episode_length_buf == 0), the root and DOF writes
+        # update robot_root_pos_w and robot_root_quat_w, but on a backend whose body poses lag
+        # until the next forward-kinematics pass, robot_body_pos_w and robot_body_quat_w still
+        # hold the pre-reset poses, so robot_ref_pos_w and robot_ref_quat_w would be stale.
+        # First observed on Isaac Gym; kept as a guard for any backend with that lag.
 
         # Solution:
         # ------------------------------------------------------------

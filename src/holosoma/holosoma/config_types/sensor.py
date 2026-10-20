@@ -272,8 +272,7 @@ class LidarBodyFilterConfig:
     query target. Backends resolve a selected link to the native rigid body that owns it after
     import or compilation; fixed or fused links therefore follow their owning body. An ``actor``
     selects that registered actor's root body. The filter only affects ray queries and does not
-    remove visual or collision geometry. A terrain-only compatibility caster has no
-    robot or body targets, so every filter kind is intentionally a no-op there.
+    remove visual or collision geometry.
     """
 
     target_kind: Literal["mount", "robot", "robot_link", "actor", "none"] = "mount"

@@ -67,7 +67,7 @@ class MjwDofStateView:
     Why this view is necessary
     --------------------------
     Raw PyTorch tensors cannot handle the format transformation between MuJoCo's
-    native DOF storage and holosoma's expected holosoma's canonical flattened format:
+    native DOF storage and holosoma's canonical flattened format:
 
     - **MuJoCo format**: Separate qpos[num_envs, nq] and qvel[num_envs, nv] arrays
     - **holosoma expects**: Flattened [num_envs * num_dof, 2] where [:, 0] = pos, [:, 1] = vel
@@ -149,7 +149,7 @@ class MjwDofStateView:
         dof_pos = self.qpos[:, self.dof_pos_indices]  # [num_envs, num_dof]
         dof_vel = self.qvel[:, self.dof_vel_indices]  # [num_envs, num_dof]
 
-        # Stack into the flattened format: [num_envs, num_dof, 2]
+        # Stack positions and velocities: [num_envs, num_dof, 2]
         dof_state = torch.stack([dof_pos, dof_vel], dim=2)
 
         # Flatten to [num_envs * num_dof, 2]
