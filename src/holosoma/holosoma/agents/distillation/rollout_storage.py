@@ -10,7 +10,7 @@ action label, and the ``dones`` flag for episode resets.
 
 from __future__ import annotations
 
-from typing import Iterator
+from collections.abc import Iterator
 
 import torch
 

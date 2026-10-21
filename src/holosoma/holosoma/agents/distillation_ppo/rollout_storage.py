@@ -18,7 +18,7 @@ storage does, so the :class:`Minibatch`-like generator output stays compatible.
 
 from __future__ import annotations
 
-from typing import Iterator
+from collections.abc import Iterator
 
 import torch
 

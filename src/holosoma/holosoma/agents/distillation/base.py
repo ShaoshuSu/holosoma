@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import itertools
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable, ClassVar, cast
+from typing import Any, ClassVar, cast
 
 import torch
 import torch.nn.functional as F
@@ -192,12 +193,9 @@ class DistillationBase(BaseAlgo):
             raise TypeError(f"Unexpected type for depth obs dims: {type(entry)}")
         if term not in entry:
             raise KeyError(f"depth obs group {group!r} missing term {term!r}; found {list(entry.keys())}")
-        # get_obs_dims() reports image terms flattened; sample the term for its real shape.
+        # Ask the manager for the term's real per-env shape; this reads no envs and advances nothing.
         assert self.env.observation_manager is not None
-        depth = self.env.observation_manager.compute_group(group, modify_history=False)
-        if not isinstance(depth, dict):
-            raise TypeError(f"expected compute_group({group!r}) to return a dict when concatenate=False.")
-        return tuple(depth[term].shape[1:])
+        return self.env.observation_manager.term_shape(group, term)
 
     # --------------------------------------------------------------- obs helpers
 

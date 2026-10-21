@@ -74,9 +74,8 @@ def mock_env_with_history() -> MagicMock:
         ),
     }
 
-    # Mock _compute_term to return tensors with expected dimensions
-    def mock_compute_term(group_name: str, term_name: str, term_cfg: MagicMock) -> torch.Tensor:
-        num_envs = 2
+    # Mock term_shape to return the expected per-env term dimensions
+    def mock_term_shape(group_name: str, term_name: str) -> tuple[int, ...]:
         dims = {
             "base_ang_vel": 3,
             "projected_gravity": 3,
@@ -84,9 +83,9 @@ def mock_env_with_history() -> MagicMock:
             "dof_vel": 10,
             "base_lin_vel": 3,
         }
-        return torch.randn(num_envs, dims[term_name])
+        return (dims[term_name],)
 
-    obs_manager._compute_term = mock_compute_term
+    obs_manager.term_shape = mock_term_shape
     env.observation_manager = obs_manager
 
     # Mock history_length dict
@@ -342,10 +341,10 @@ def test_different_history_lengths(history_length: int) -> None:
         "actor_obs": MagicMock(history_length=history_length, terms={"dof_pos": MagicMock()}),
     }
 
-    def mock_compute_term(group_name: str, term_name: str, term_cfg: MagicMock) -> torch.Tensor:
-        return torch.randn(2, 2)  # 2 dofs
+    def mock_term_shape(group_name: str, term_name: str) -> tuple[int, ...]:
+        return (2,)  # 2 dofs
 
-    obs_manager._compute_term = mock_compute_term
+    obs_manager.term_shape = mock_term_shape
     env.observation_manager = obs_manager
     env.history_length = {"actor_obs": history_length}
 

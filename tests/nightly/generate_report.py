@@ -86,6 +86,7 @@ def get_nightly_run_ids(gh_run_id: str | None = None) -> dict[str, list[str]]:
         for tag in run.tags:
             if tag.startswith("nightly-"):
                 continue
+            # "isaacgym" kept for archived runs (retired backend); see run_summary.KNOWN_SIMULATORS.
             if tag in ["isaacgym", "isaacsim", "singlegpu", "multigpu", "nightly_test_passed", "nightly_test_failed"]:
                 continue
             if tag.startswith(("gha-run-id-", "gpus-")):

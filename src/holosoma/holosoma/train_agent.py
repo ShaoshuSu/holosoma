@@ -198,7 +198,6 @@ def train(tyro_config: ExperimentConfig, training_context: TrainingContext | Non
 
     env = None
     try:
-        # have to import torch after isaacgym
         import torch
         import torch.distributed as dist
         import wandb
