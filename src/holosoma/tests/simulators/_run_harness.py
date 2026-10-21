@@ -13,6 +13,7 @@ plain assertions inside a test.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -31,6 +32,13 @@ def _fail_message(label: str, returncode: int, stdout: str, stderr: str, extra: 
     """Standard failure message: a one-line summary plus truncated stdout/stderr tails."""
     head = f"{label} failed (exit {returncode}){extra}."
     return f"{head}\n--- stdout ---\n{stdout[-3000:]}\n--- stderr ---\n{stderr[-2000:]}"
+
+
+def _decode(output: bytes | str | None) -> str:
+    """Decode partial subprocess output captured on timeout."""
+    if isinstance(output, bytes):
+        return output.decode("utf-8", errors="replace")
+    return output or ""
 
 
 def _skip_reason(stdout: str, label: str) -> str:
@@ -73,18 +81,26 @@ def run_harness(
 
     Returns the ``CompletedProcess`` so callers can make further assertions if needed.
     """
-    result = subprocess.run(
-        [sys.executable, str(harness), *args],
-        capture_output=True,
-        text=True,
-        # Decode harness output as UTF-8 (it prints non-ASCII chars like ✓/—); otherwise text=True
-        # uses the locale codec, which is ASCII in the hsgym Py3.8 container and crashes on 0xe2.
-        # errors="replace" so stray bytes can never mask a real result.
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [sys.executable, str(harness), *args],
+            capture_output=True,
+            text=True,
+            # Decode harness output as UTF-8 (it prints non-ASCII chars like ✓/—); otherwise text=True
+            # uses the locale codec, which is ASCII in the hsgym Py3.8 container and crashes on 0xe2.
+            # errors="replace" so stray bytes can never mask a real result.
+            encoding="utf-8",
+            errors="replace",
+            # Unbuffered so a harness killed on timeout still leaves its output in the pipe.
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # The partial output is raw bytes here even with text=True. The child was SIGKILLed.
+        raise AssertionError(
+            _fail_message(label, -9, _decode(exc.stdout), _decode(exc.stderr), extra=f", timed out after {timeout:g}s")
+        ) from None
     # Runtime skip: the harness signalled (via the autotools-convention exit 77) that this cell is
     # unsupported in a way only knowable at runtime. Surface it as a real pytest skip with reason,
     # not a pass. Checked before the success assertions so a skip is never mistaken for a failure.
