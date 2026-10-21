@@ -242,8 +242,8 @@ def main() -> None:
         lookahead_layout="flat_0p2s",
         history_initialization="repeat_first",
     )
-    for value in (50.0, 150.0):
-        for limit in (None, 20.0):
+    for value in (5.0, 50.0, 150.0):
+        for limit in (None, 10.0, 20.0, 30.0):
             _write_model(
                 output / f"action_{int(value)}_clip_{int(limit) if limit else 'absent'}.onnx",
                 control={"action_clip_value": limit} if limit else None,
@@ -268,6 +268,12 @@ def main() -> None:
                 constant_action=value,
                 action_scale=0.25,
             )
+    _write_model(
+        output / "action_flag_false_clip_10_50.onnx",
+        control={"clip_actions": False, "action_clip_value": 10},
+        constant_action=50,
+        action_scale=0.25,
+    )
     _write_model(output / "bad_clip_actions.onnx", control={"clip_actions": "false", "action_clip_value": 20})
 
 

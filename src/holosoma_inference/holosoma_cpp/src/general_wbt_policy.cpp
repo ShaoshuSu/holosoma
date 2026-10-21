@@ -47,6 +47,11 @@ GeneralWBTPolicy::GeneralWBTPolicy(InferenceConfig config, PolicyContext& contex
 
 void GeneralWBTPolicy::setup_policy(ModelSlot& slot) {
   auto core = std::make_unique<live::WbtPolicy>();
+  live::WbtHistoryInitialization history;
+  if (!live::ParseWbtHistoryInitialization(config_.task.wbt_history_initialization, history))
+    throw ConfigError("task.wbt_history_initialization: '" + config_.task.wbt_history_initialization +
+                      "' is not repeat_first_valid_obs or zero_pad");
+  core->SetHistoryInitialization(history);
   if (!core->Initialize(slot.model)) throw ConfigError(slot.path + ": invalid live WBT checkpoint");
   if (config_.robot.dof_names != core->JointNames())
     throw ConfigError("Live WBT robot.dof_names must match checkpoint metadata order");

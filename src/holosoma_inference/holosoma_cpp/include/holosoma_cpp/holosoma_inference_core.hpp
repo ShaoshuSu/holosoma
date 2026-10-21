@@ -5,6 +5,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -12,6 +13,19 @@
 #include "holosoma_cpp/onnx_model.hpp"
 
 namespace holosoma::live {
+
+// How an empty observation history is filled before it holds history_length frames.
+enum class WbtHistoryInitialization {
+  kRepeatFirstValidObs,  // repeat the first valid, fully built observation term (default)
+  kZeroPad,              // fill the missing slots with zeros
+};
+// Canonical spellings "repeat_first_valid_obs" and "zero_pad".
+const char *ToString(WbtHistoryInitialization mode);
+bool ParseWbtHistoryInitialization(const std::string &text, WbtHistoryInitialization &mode);
+
+// Bound on raw single-file WBT actions, before action scale and previous-action feedback.
+// A tighter model-declared clip still applies. This is not a joint-angle limit.
+inline constexpr float kWbtActionCeiling = 20.0f;
 
 // Single-graph holosoma WBT policy. The graph and its complete observation
 // contract are read from ONNX metadata; unsupported contracts fail at load.
@@ -22,6 +36,13 @@ class WbtPolicy {
 
   WbtPolicy(const WbtPolicy &) = delete;
   WbtPolicy &operator=(const WbtPolicy &) = delete;
+
+  // The runtime history mode is authoritative over checkpoint metadata. Changing it resets
+  // the policy, so histories built under two modes never mix within an episode.
+  void SetHistoryInitialization(WbtHistoryInitialization mode);
+  WbtHistoryInitialization HistoryInitialization() const { return history_initialization_; }
+  // The effective raw-action bound: kWbtActionCeiling or a tighter declared clip.
+  float ActionClip() const { return action_clip_; }
 
   bool Initialize(const std::string &model_path, bool use_gpu = false, int intra_op_threads = 2);
   // Share the already-loaded session with a library policy slot; never load a second graph.
@@ -64,11 +85,6 @@ class WbtPolicy {
   static bool IsWbtModelFile(const std::string &model_path);
 
  private:
-  enum class HistoryInitialization { kZero, kRepeatFirst };
-  // Compatibility contract for exports that predate these metadata fields.
-  static constexpr HistoryInitialization kLegacyHistoryInitialization = HistoryInitialization::kZero;
-  static constexpr float kLegacyActionClip = 100.0f;
-
   enum class TermKind {
     kMotionCommand,
     kMotionCommandLookahead,
@@ -121,11 +137,10 @@ class WbtPolicy {
   std::vector<int> trained_lookahead_offsets_;
   int motion_command_dim_ = 0;
   float observation_clip_ = 100.0f;
-  HistoryInitialization history_initialization_ = kLegacyHistoryInitialization;
-  float action_clip_ = kLegacyActionClip;
-  bool history_from_metadata_ = false;
-  bool action_clip_from_metadata_ = false;
-  bool training_action_clip_enabled_ = true;
+  WbtHistoryInitialization history_initialization_ = WbtHistoryInitialization::kRepeatFirstValidObs;
+  std::optional<WbtHistoryInitialization> declared_history_;
+  float action_clip_ = kWbtActionCeiling;
+  std::string action_clip_source_;
   std::uint64_t tick_ = 0;
 
   bool heading_initialized_ = false;

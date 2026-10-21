@@ -8,6 +8,7 @@
 #include <map>
 #include <nlohmann/json.hpp>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -145,7 +146,27 @@ class WbtPolicy::FkBody {
   holosoma::UrdfChain chain_;
 };
 
+const char *ToString(WbtHistoryInitialization mode) {
+  return mode == WbtHistoryInitialization::kZeroPad ? "zero_pad" : "repeat_first_valid_obs";
+}
+
+bool ParseWbtHistoryInitialization(const std::string &text, WbtHistoryInitialization &mode) {
+  if (text == "repeat_first_valid_obs") {
+    mode = WbtHistoryInitialization::kRepeatFirstValidObs;
+  } else if (text == "zero_pad") {
+    mode = WbtHistoryInitialization::kZeroPad;
+  } else {
+    return false;
+  }
+  return true;
+}
+
 WbtPolicy::WbtPolicy() = default;
+
+void WbtPolicy::SetHistoryInitialization(WbtHistoryInitialization mode) {
+  history_initialization_ = mode;
+  Reset();
+}
 
 WbtPolicy::~WbtPolicy() = default;
 
@@ -212,22 +233,21 @@ bool WbtPolicy::Initialize(std::shared_ptr<holosoma::OnnxModel> session) {
   initialized_ = true;
   std::cout << "[WbtPolicy] Loaded holosoma WBT model " << model_path << " (obs=" << obs_input_.size()
             << ", anchor=" << anchor_body_name_ << ", lookahead=" << trained_lookahead_offsets_.size() << " slots / "
-            << TrainedLookaheadFrames() << " trained frames, history="
-            << (history_initialization_ == HistoryInitialization::kRepeatFirst ? "repeat_first" : "zero")
-            << (history_from_metadata_ ? " [metadata]" : " [compatibility default]") << ", action_clip=" << action_clip_
-            << (!training_action_clip_enabled_ ? " [clip_actions=false; compatibility ceiling]"
-                : action_clip_from_metadata_   ? " [metadata]"
-                                               : " [compatibility default]")
-            << ")" << std::endl;
+            << TrainedLookaheadFrames() << " trained frames, history=" << ToString(history_initialization_)
+            << " [runtime; checkpoint "
+            << (!declared_history_ ? std::string("declares none")
+                : *declared_history_ == history_initialization_
+                    ? std::string("agrees")
+                    : std::string("declares ") + ToString(*declared_history_) + ", overridden")
+            << "], action_clip=" << action_clip_ << " [" << action_clip_source_ << "])" << std::endl;
   return true;
 }
 
 bool WbtPolicy::ParseMetadata(std::string &error) {
-  history_initialization_ = kLegacyHistoryInitialization;
-  action_clip_ = kLegacyActionClip;
-  history_from_metadata_ = false;
-  action_clip_from_metadata_ = false;
-  training_action_clip_enabled_ = true;
+  declared_history_.reset();
+  action_clip_ = kWbtActionCeiling;
+  action_clip_source_ = "ceiling; checkpoint declares none";
+  bool training_action_clip_enabled = true;
   std::string stage = "reading the custom metadata map";
   try {
     std::unordered_map<std::string, std::string> metadata;
@@ -286,13 +306,15 @@ bool WbtPolicy::ParseMetadata(std::string &error) {
     stage = "parsing wbt_history_initialization";
     const auto history = metadata.find("wbt_history_initialization");
     if (history != metadata.end()) {
+      // Exports spell the two modes "repeat_first" and "zero"; the runtime mode still decides.
       if (history->second == "repeat_first") {
-        history_initialization_ = HistoryInitialization::kRepeatFirst;
-      } else if (history->second != "zero") {
+        declared_history_ = WbtHistoryInitialization::kRepeatFirstValidObs;
+      } else if (history->second == "zero") {
+        declared_history_ = WbtHistoryInitialization::kZeroPad;
+      } else {
         error = "metadata wbt_history_initialization must be zero or repeat_first";
         return false;
       }
-      history_from_metadata_ = true;
     }
 
     stage = "parsing experiment_config.robot.control.action_clip_value";
@@ -308,7 +330,8 @@ bool WbtPolicy::ParseMetadata(std::string &error) {
           error = "experiment_config.robot.control.clip_actions must be a boolean";
           return false;
         }
-        training_action_clip_enabled_ = control.at("clip_actions").get<bool>();
+        training_action_clip_enabled = control.at("clip_actions").get<bool>();
+        if (!training_action_clip_enabled) action_clip_source_ = "ceiling; checkpoint disables training clip";
       }
       if (control.contains("action_clip_value")) {
         const auto &value = control.at("action_clip_value");
@@ -321,10 +344,16 @@ bool WbtPolicy::ParseMetadata(std::string &error) {
           error = "experiment_config.robot.control.action_clip_value must be a finite positive number";
           return false;
         }
-        if (training_action_clip_enabled_) {
+        std::ostringstream source;
+        if (!training_action_clip_enabled) {
+          source << "ceiling; checkpoint disables training clip";
+        } else if (declared_clip <= kWbtActionCeiling) {
           action_clip_ = declared_clip;
-          action_clip_from_metadata_ = true;
+          source << "checkpoint";
+        } else {
+          source << "ceiling; checkpoint declares " << declared_clip;
         }
+        action_clip_source_ = source.str();
       }
     }
 
@@ -756,7 +785,7 @@ bool WbtPolicy::ComputeAction(const RobotObservation &obs, const WbtReferenceSeq
   std::size_t output_offset = 0;
   for (std::size_t i = 0; i < terms_.size(); ++i) {
     Term &term = terms_[i];
-    if (term.history.empty() && history_initialization_ == HistoryInitialization::kRepeatFirst) {
+    if (term.history.empty() && history_initialization_ == WbtHistoryInitialization::kRepeatFirstValidObs) {
       term.history.assign(static_cast<std::size_t>(term.history_length), values[i]);
     } else {
       term.history.push_back(values[i]);

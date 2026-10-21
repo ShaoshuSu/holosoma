@@ -167,6 +167,13 @@ class TaskConfig:
     use_sim_time: bool = False
     """Use synchronized simulation time for WBT policies."""
 
+    wbt_history_initialization: Literal["repeat_first_valid_obs", "zero_pad"] = "repeat_first_valid_obs"
+    """WBT: how an empty observation history is filled until it holds history_length frames.
+
+    ``repeat_first_valid_obs`` repeats the first valid, fully built observation term;
+    ``zero_pad`` fills the missing slots with zeros. This runtime setting overrides the
+    checkpoint's declared mode, and the difference is logged at load."""
+
     startup_state_timeout: float = 30.0
     """Seconds the SDK runner waits for its first valid robot state before failing.
 

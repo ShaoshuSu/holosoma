@@ -148,7 +148,8 @@ def test_public_policy_borrows_one_reference_and_returns_command_snapshots(tmp_p
     write_model = runpy.run_path(str(generator))["_write_model"]
     checkpoint = tmp_path / "live.onnx"
     write_model(checkpoint, history=9, lookahead_layout="flat_0p2s")
-    policy = inference.Policy.from_live_model(str(checkpoint))
+    # Zero padding makes the command change while history fills, which the snapshot check needs.
+    policy = inference.Policy.from_live_model(str(checkpoint), history_initialization="zero_pad")
     assert policy.lookahead_offsets == [0, 2, 4, 6, 8]
     state = inference.RobotState()
     state.dof_pos = state.dof_vel = [0.0] * 29
@@ -490,3 +491,96 @@ def test_startup_state_timeout_must_be_a_positive_finite_duration(native_config,
     config, _ = native_config
     with pytest.raises(ValueError, match="startup-state-timeout"):
         replace(config.task, startup_state_timeout=timeout)
+
+
+def _write_live_model(tmp_path, name="live.onnx", **kwargs):
+    generator = Path(__file__).parents[1] / "holosoma_cpp/tests/gen_live_stub_models.py"
+    write_model = runpy.run_path(str(generator))["_write_model"]
+    checkpoint = tmp_path / name
+    write_model(checkpoint, **kwargs)
+    return str(checkpoint)
+
+
+def _split_window(marker):
+    reference = inference.ReferenceWindow()
+    reference.q = [marker] * (10 * 29)
+    reference.dq = [0.0] * (10 * 29)
+    reference.quat = [[1, 0, 0, 0]] * 10
+    return reference
+
+
+def _oldest_and_newest_history_slot(policy, marker):
+    state = inference.RobotState()
+    state.dof_pos = state.dof_vel = [0.0] * 29
+    window = _split_window(marker)
+    policy.set_reference(window)
+    policy.step(state)
+    observation = np.asarray(policy.last_observation)
+    return observation[0], observation[2 * 58]
+
+
+@pytest.mark.parametrize(("mode", "padded"), [("repeat_first_valid_obs", 1.0), ("zero_pad", 0.0)])
+def test_live_model_history_initialization_reaches_the_native_core(tmp_path, mode, padded):
+    checkpoint = _write_live_model(tmp_path, history=3, lookahead_layout="split")
+    policy = inference.Policy.from_live_model(checkpoint, history_initialization=mode)
+    oldest, newest = _oldest_and_newest_history_slot(policy, 0.5)
+    assert newest == pytest.approx(0.5)
+    assert oldest == pytest.approx(padded * 0.5)
+
+
+def test_live_model_defaults_to_repeat_first_valid_obs_and_rejects_other_spellings(tmp_path):
+    checkpoint = _write_live_model(tmp_path, history=3, lookahead_layout="split", history_initialization="zero")
+    oldest, newest = _oldest_and_newest_history_slot(inference.Policy.from_live_model(checkpoint), 0.5)
+    assert oldest == newest == pytest.approx(0.5)
+    with pytest.raises(Exception, match="wbt_history_initialization"):
+        inference.Policy.from_live_model(checkpoint, history_initialization="zero")
+
+
+def test_python_config_forwards_history_initialization_to_the_metadata_policy(tmp_path):
+    from holosoma_inference.native import GeneralWBTPolicy
+
+    checkpoint = _write_live_model(tmp_path, history=3, lookahead_layout="split")
+    config = inference.get_config("g1-29dof-loco")
+    observation = replace(config.observation, obs_dict={"actor_obs": [], "actor_targets": []})
+    results = {}
+    for mode in ("repeat_first_valid_obs", "zero_pad"):
+        task = replace(config.task, model_path=checkpoint, use_phase=False, wbt_history_initialization=mode)
+        policy = GeneralWBTPolicy(replace(config, observation=observation, task=task, secondary=None))
+        window = _split_window(0.5)
+        policy.set_reference(window)
+        state = np.zeros((1, 71))
+        state[0, 3] = 1
+        policy.step_state(state)
+        results[mode] = (policy.last_observation[0], policy.last_observation[2 * 58])
+    assert results["repeat_first_valid_obs"] == pytest.approx((0.5, 0.5))
+    assert results["zero_pad"] == pytest.approx((0.0, 0.5))
+
+
+def test_task_config_rejects_an_unknown_history_initialization(native_config):
+    config, _ = native_config
+    with pytest.raises(ValueError, match="wbt_history_initialization"):
+        replace(config.task, wbt_history_initialization="zero")
+
+
+@pytest.mark.parametrize(
+    ("control", "raw", "clip"),
+    [(None, 50.0, 20.0), ({"action_clip_value": 10.0}, 50.0, 10.0), ({"clip_actions": False}, 150.0, 20.0)],
+    ids=["missing-uses-ceiling", "tighter-declared", "training-clip-disabled"],
+)
+def test_live_wbt_policy_reports_and_applies_the_effective_action_clip(tmp_path, control, raw, clip):
+    checkpoint = _write_live_model(tmp_path, control=control, constant_action=raw, action_scale=0.25)
+    policy = inference.LiveWbtPolicy(checkpoint, history_initialization="zero_pad")
+    assert policy.history_initialization == "zero_pad"
+    assert policy.action_clip == pytest.approx(clip)
+    observation = inference.LiveRobotObservation()
+    reference = inference.ReferenceSequence()
+    reference.lookahead = [inference.ReferenceFrame() for _ in range(10)]
+    # The stub checkpoint's default pose is 0.01 rad per joint index.
+    targets = np.asarray(policy.step(observation, reference)).reshape(-1) - 0.01 * np.arange(29)
+    expected = np.where(np.arange(29) % 2, -clip, clip) * 0.25
+    np.testing.assert_allclose(targets, expected, rtol=1e-6)
+
+
+def test_live_wbt_policy_rejects_an_unknown_history_initialization(tmp_path):
+    with pytest.raises(ValueError, match="repeat_first_valid_obs or zero_pad"):
+        inference.LiveWbtPolicy(_write_live_model(tmp_path), history_initialization="zero")

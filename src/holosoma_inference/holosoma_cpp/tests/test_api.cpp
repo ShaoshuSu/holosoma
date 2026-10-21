@@ -105,6 +105,28 @@ TEST(PolicyApi, ExportedHistoryAndClipReachJointCommands) {
   EXPECT_NEAR(repeated.step(robot_state()).q[0], 1.0, 1e-6);
 }
 
+TEST(PolicyApi, HistoryInitializationReachesTheSharedCore) {
+  for (const auto& [setting, mode, padded] :
+       {std::make_tuple("repeat_first_valid_obs", live::WbtHistoryInitialization::kRepeatFirstValidObs, 1.0f),
+        std::make_tuple("zero_pad", live::WbtHistoryInitialization::kZeroPad, 0.0f)}) {
+    SCOPED_TRACE(setting);
+    auto config = live_policy_config(model("history_absent.onnx"));
+    config.task.wbt_history_initialization = setting;
+    Policy policy(config);
+    auto& core = dynamic_cast<GeneralWBTPolicy&>(policy.policy()).core();
+    EXPECT_EQ(core.HistoryInitialization(), mode);
+    auto window = reference_window(core.LookaheadSlots());
+    window.q.assign(window.q.size(), 0.5);
+    policy.set_reference(&window);
+    policy.step(robot_state());
+    ASSERT_FLOAT_EQ(core.LastObservation()[2 * 58], 0.5f);  // the newest frame carries the marker
+    EXPECT_FLOAT_EQ(core.LastObservation()[0], padded * 0.5f);
+  }
+  auto config = live_policy_config(model("history_absent.onnx"));
+  config.task.wbt_history_initialization = "zero";
+  EXPECT_THROW(Policy{config}, ConfigError);
+}
+
 TEST(PolicyApi, AllLiveLayoutsPreserveTimingResetAndCurrentReference) {
   for (const auto* name :
        {"pelvis.onnx", "torso.onnx", "split_history.onnx", "legacy_history.onnx", "sonic_flat.onnx"}) {

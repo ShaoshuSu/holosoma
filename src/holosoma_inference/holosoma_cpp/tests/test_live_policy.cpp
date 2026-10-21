@@ -5,6 +5,7 @@
 #include <cmath>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "gtest/gtest.h"
@@ -130,6 +131,7 @@ TEST(WbtPolicyGpu, MatchesCpuAcrossChangingReferences) {
 
 TEST(WbtPolicyObservation, SplitHistoryKeepsProprioHistoryAndTrueFutureTargetsSeparate) {
   WbtPolicy policy;
+  policy.SetHistoryInitialization(WbtHistoryInitialization::kZeroPad);  // layout, read with zero slots
   ASSERT_TRUE(policy.Initialize(Model("split_history.onnx")));
   std::array<float, kActionDim> action{};
 
@@ -217,20 +219,48 @@ TEST(WbtPolicyMetadata, RepeatsTheFirstFrameUntilHistoryIsFull) {
   }
 }
 
-TEST(WbtPolicyMetadata, ExplicitZeroAndAbsentHistoryKeepCompatibilityPadding) {
-  for (const char *name : {"history_zero.onnx", "history_absent.onnx"}) {
-    SCOPED_TRACE(name);
-    WbtPolicy policy;
-    ASSERT_TRUE(policy.Initialize(Model(name)));
-    std::array<float, kActionDim> action{};
-    for (int tick = 0; tick < 4; ++tick) {
-      ASSERT_TRUE(policy.ComputeAction(Obs(), Sequence(1.0f + tick, 10.0f), action.data()));
-      for (int slot = 0; slot < 3; ++slot) {
-        const int source_tick = tick - 2 + slot;
-        EXPECT_FLOAT_EQ(policy.LastObservation()[slot * 58], source_tick < 0 ? 0.0f : 1.0f + source_tick);
+TEST(WbtPolicyHistoryMode, RuntimeModeDecidesWhateverTheCheckpointDeclares) {
+  for (const char *name : {"history_zero.onnx", "history_absent.onnx", "history_repeat_first.onnx"}) {
+    for (const auto mode : {WbtHistoryInitialization::kRepeatFirstValidObs, WbtHistoryInitialization::kZeroPad}) {
+      SCOPED_TRACE(std::string(name) + " " + ToString(mode));
+      WbtPolicy policy;
+      policy.SetHistoryInitialization(mode);
+      ASSERT_TRUE(policy.Initialize(Model(name)));
+      EXPECT_EQ(policy.HistoryInitialization(), mode);
+      std::array<float, kActionDim> action{};
+      for (int tick = 0; tick < 4; ++tick) {
+        ASSERT_TRUE(policy.ComputeAction(Obs(), Sequence(1.0f + tick, 10.0f), action.data()));
+        for (int slot = 0; slot < 3; ++slot) {
+          const int source_tick = tick - 2 + slot;
+          const float padded = mode == WbtHistoryInitialization::kZeroPad ? 0.0f : 1.0f;
+          EXPECT_FLOAT_EQ(policy.LastObservation()[slot * 58], source_tick < 0 ? padded : 1.0f + source_tick);
+        }
       }
     }
   }
+}
+
+TEST(WbtPolicyHistoryMode, DefaultIsRepeatFirstValidObs) {
+  WbtPolicy policy;
+  EXPECT_EQ(policy.HistoryInitialization(), WbtHistoryInitialization::kRepeatFirstValidObs);
+  ASSERT_TRUE(policy.Initialize(Model("history_absent.onnx")));
+  std::array<float, kActionDim> action{};
+  ASSERT_TRUE(policy.ComputeAction(Obs(), Sequence(3, 10), action.data()));
+  for (int slot = 0; slot < 3; ++slot) EXPECT_FLOAT_EQ(policy.LastObservation()[slot * 58], 3.0f);
+}
+
+TEST(WbtPolicyHistoryMode, CanonicalSpellingsRoundTripAndOthersAreRejected) {
+  for (const auto mode : {WbtHistoryInitialization::kRepeatFirstValidObs, WbtHistoryInitialization::kZeroPad}) {
+    WbtHistoryInitialization parsed{};
+    ASSERT_TRUE(ParseWbtHistoryInitialization(ToString(mode), parsed));
+    EXPECT_EQ(parsed, mode);
+  }
+  EXPECT_STREQ(ToString(WbtHistoryInitialization::kRepeatFirstValidObs), "repeat_first_valid_obs");
+  EXPECT_STREQ(ToString(WbtHistoryInitialization::kZeroPad), "zero_pad");
+  WbtHistoryInitialization parsed = WbtHistoryInitialization::kZeroPad;
+  for (const char *text : {"repeat_first", "zero", "", "ZERO_PAD"})
+    EXPECT_FALSE(ParseWbtHistoryInitialization(text, parsed));
+  EXPECT_EQ(parsed, WbtHistoryInitialization::kZeroPad);
 }
 
 TEST(WbtPolicyMetadata, ResetReseedsButHeadingReanchorKeepsHistory) {
@@ -245,10 +275,15 @@ TEST(WbtPolicyMetadata, ResetReseedsButHeadingReanchorKeepsHistory) {
   policy.Reset();
   ASSERT_TRUE(policy.ComputeAction(Obs(), Sequence(7, 70), action.data()));
   for (int slot = 0; slot < 3; ++slot) EXPECT_FLOAT_EQ(policy.LastObservation()[slot * 58], 7.0f);
-  // A new model without fields must not inherit the preceding model's policy.
-  ASSERT_TRUE(policy.Initialize(Model("history_absent.onnx")));
-  ASSERT_TRUE(policy.ComputeAction(Obs(), Sequence(7, 70), action.data()));
+  // Changing the mode is a deliberate reset: the next frame starts a fresh, zero-padded history.
+  policy.SetHistoryInitialization(WbtHistoryInitialization::kZeroPad);
+  ASSERT_TRUE(policy.ComputeAction(Obs(), Sequence(8, 80), action.data()));
   EXPECT_FLOAT_EQ(policy.LastObservation()[0], 0.0f);
+  EXPECT_FLOAT_EQ(policy.LastObservation()[58], 0.0f);
+  EXPECT_FLOAT_EQ(policy.LastObservation()[2 * 58], 8.0f);
+  // A reload keeps the runtime mode; the checkpoint's declaration does not replace it.
+  ASSERT_TRUE(policy.Initialize(Model("history_repeat_first.onnx")));
+  EXPECT_EQ(policy.HistoryInitialization(), WbtHistoryInitialization::kZeroPad);
 }
 
 TEST(WbtPolicyMetadata, FlatProprioHistoryRepeatsWithoutRepeatingFutureTargets) {
@@ -283,16 +318,29 @@ TEST(WbtPolicyMetadata, DeclaredActionClipBoundsOutputAndNextActionObservation) 
   }
 }
 
-TEST(WbtPolicyMetadata, MissingActionClipKeepsOneHundredAndReloadDoesNotLeak) {
+TEST(WbtPolicyActionClip, CeilingOfTwentyUnlessTheCheckpointDeclaresTighter) {
   WbtPolicy policy;
-  ASSERT_TRUE(policy.Initialize(Model("action_50_clip_20.onnx")));
-  for (const auto &entry :
-       {std::make_pair("action_50_clip_absent.onnx", 50.0f), std::make_pair("action_150_clip_absent.onnx", 100.0f)}) {
-    ASSERT_TRUE(policy.Initialize(Model(entry.first)));
+  ASSERT_TRUE(policy.Initialize(Model("action_50_clip_10.onnx")));
+  // {model, effective clip, raw output}: inside the bound, missing, looser and tighter declarations.
+  for (const auto &[name, clip, raw] : {std::make_tuple("action_5_clip_absent.onnx", 20.0f, 5.0f),
+                                        std::make_tuple("action_50_clip_absent.onnx", 20.0f, 50.0f),
+                                        std::make_tuple("action_150_clip_absent.onnx", 20.0f, 150.0f),
+                                        std::make_tuple("action_150_clip_30.onnx", 20.0f, 150.0f),
+                                        std::make_tuple("action_50_clip_20.onnx", 20.0f, 50.0f),
+                                        std::make_tuple("action_50_clip_10.onnx", 10.0f, 50.0f),
+                                        std::make_tuple("action_5_clip_10.onnx", 10.0f, 5.0f)}) {
+    SCOPED_TRACE(name);
+    ASSERT_TRUE(policy.Initialize(Model(name)));
+    EXPECT_FLOAT_EQ(policy.ActionClip(), clip);
     std::array<float, kActionDim> action{};
-    ASSERT_TRUE(policy.ComputeAction(Obs(), Sequence(1, 10), action.data()));
-    for (int joint = 0; joint < kActionDim; ++joint)
-      EXPECT_FLOAT_EQ(action[joint], (joint % 2 ? -entry.second : entry.second) * 0.25f);
+    for (int tick = 0; tick < 2; ++tick) {
+      ASSERT_TRUE(policy.ComputeAction(Obs(), Sequence(1, 10), action.data()));
+      for (int joint = 0; joint < kActionDim; ++joint) {
+        const float bounded = std::min(raw, clip) * (joint % 2 ? -1.0f : 1.0f);
+        EXPECT_FLOAT_EQ(action[joint], bounded * 0.25f);  // clip raw output BEFORE scaling
+        EXPECT_FLOAT_EQ(policy.LastObservation()[128 + joint], tick == 0 ? 0.0f : bounded);  // and feedback
+      }
+    }
   }
 }
 
@@ -314,8 +362,9 @@ TEST(WbtPolicyMetadata, LogsCompatibilitySettingsOnlyAtLoad) {
   const bool initialized = policy.Initialize(Model("history_absent.onnx"));
   const auto loaded = testing::internal::GetCapturedStdout();
   ASSERT_TRUE(initialized);
-  EXPECT_NE(loaded.find("history=zero [compatibility default]"), std::string::npos);
-  EXPECT_NE(loaded.find("action_clip=100 [compatibility default]"), std::string::npos);
+  EXPECT_NE(loaded.find("history=repeat_first_valid_obs [runtime; checkpoint declares none]"), std::string::npos)
+      << loaded;
+  EXPECT_NE(loaded.find("action_clip=20 [ceiling; checkpoint declares none]"), std::string::npos) << loaded;
   std::array<float, kActionDim> action{};
   testing::internal::CaptureStdout();
   const bool stepped = policy.ComputeAction(Obs(), Sequence(1, 10), action.data());
@@ -325,11 +374,36 @@ TEST(WbtPolicyMetadata, LogsCompatibilitySettingsOnlyAtLoad) {
   EXPECT_TRUE(stepping.empty());
 }
 
-TEST(WbtPolicyMetadata, DisabledTrainingClipRetainsOnlyTheCompatibilityCeiling) {
+TEST(WbtPolicyMetadata, LogsTheEffectiveContractAndAnyRuntimeOverride) {
+  for (const auto &[name, history, clip] : {
+           std::make_tuple("history_zero.onnx",
+                           "history=repeat_first_valid_obs [runtime; checkpoint declares zero_pad, overridden]",
+                           "action_clip=20 [ceiling; checkpoint declares none]"),
+           std::make_tuple("history_repeat_first.onnx", "history=repeat_first_valid_obs [runtime; checkpoint agrees]",
+                           "action_clip=20 [ceiling; checkpoint declares none]"),
+           std::make_tuple("action_50_clip_10.onnx", "", "action_clip=10 [checkpoint]"),
+           std::make_tuple("action_50_clip_30.onnx", "", "action_clip=20 [ceiling; checkpoint declares 30]"),
+           std::make_tuple("action_flag_false_50.onnx", "",
+                           "action_clip=20 [ceiling; checkpoint disables training clip]"),
+       }) {
+    SCOPED_TRACE(name);
+    WbtPolicy policy;
+    testing::internal::CaptureStdout();
+    const bool initialized = policy.Initialize(Model(name));
+    const auto loaded = testing::internal::GetCapturedStdout();
+    ASSERT_TRUE(initialized);
+    if (*history) EXPECT_NE(loaded.find(history), std::string::npos) << loaded;
+    EXPECT_NE(loaded.find(clip), std::string::npos) << loaded;
+  }
+}
+
+TEST(WbtPolicyMetadata, DisabledTrainingClipStillUsesTheCeiling) {
   WbtPolicy policy;
   for (const auto &entry :
-       {std::make_pair("action_flag_false_50.onnx", 50.0f), std::make_pair("action_flag_false_150.onnx", 100.0f),
-        std::make_pair("action_flag_true_50.onnx", 20.0f), std::make_pair("action_flag_true_150.onnx", 20.0f)}) {
+       {std::make_pair("action_flag_false_50.onnx", 20.0f), std::make_pair("action_flag_false_150.onnx", 20.0f),
+        // A clip the training run did not apply does not tighten the runtime bound either.
+        std::make_pair("action_flag_false_clip_10_50.onnx", 20.0f), std::make_pair("action_flag_true_50.onnx", 20.0f),
+        std::make_pair("action_flag_true_150.onnx", 20.0f)}) {
     SCOPED_TRACE(entry.first);
     ASSERT_TRUE(policy.Initialize(Model(entry.first)));
     std::array<float, kActionDim> action{};
@@ -394,6 +468,7 @@ TEST(WbtPolicyInit, FlatContractsRejectMissingMixedAndStackedFutureTerms) {
 
 TEST(WbtPolicyObservation, LegacyLookaheadUsesTheActorObsHistoryLength) {
   WbtPolicy policy;
+  policy.SetHistoryInitialization(WbtHistoryInitialization::kZeroPad);  // layout, read with zero slots
   ASSERT_TRUE(policy.Initialize(Model("legacy_history.onnx")));
   std::array<float, kActionDim> action{};
   auto first = Sequence(1.0f, 10.0f);

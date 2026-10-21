@@ -77,6 +77,8 @@ struct TaskConfig {
   std::string state_input = "keyboard";
   bool auto_walk_on_vel_cmd = false;
   bool use_sim_time = false;
+  // WBT: "repeat_first_valid_obs" (default) or "zero_pad"; overrides checkpoint metadata.
+  std::string wbt_history_initialization = "repeat_first_valid_obs";
   double desired_base_height = 0.75;
   bool print_observations = false;
   int motion_start_timestep = 0;
