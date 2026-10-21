@@ -215,7 +215,10 @@ bool WbtPolicy::Initialize(std::shared_ptr<holosoma::OnnxModel> session) {
             << TrainedLookaheadFrames() << " trained frames, history="
             << (history_initialization_ == HistoryInitialization::kRepeatFirst ? "repeat_first" : "zero")
             << (history_from_metadata_ ? " [metadata]" : " [compatibility default]") << ", action_clip=" << action_clip_
-            << (action_clip_from_metadata_ ? " [metadata]" : " [compatibility default]") << ")" << std::endl;
+            << (!training_action_clip_enabled_ ? " [clip_actions=false; compatibility ceiling]"
+                : action_clip_from_metadata_   ? " [metadata]"
+                                               : " [compatibility default]")
+            << ")" << std::endl;
   return true;
 }
 
@@ -224,6 +227,7 @@ bool WbtPolicy::ParseMetadata(std::string &error) {
   action_clip_ = kLegacyActionClip;
   history_from_metadata_ = false;
   action_clip_from_metadata_ = false;
+  training_action_clip_enabled_ = true;
   std::string stage = "reading the custom metadata map";
   try {
     std::unordered_map<std::string, std::string> metadata;
@@ -299,18 +303,28 @@ bool WbtPolicy::ParseMetadata(std::string &error) {
         error = "experiment_config.robot.control must be an object";
         return false;
       }
+      if (control.contains("clip_actions")) {
+        if (!control.at("clip_actions").is_boolean()) {
+          error = "experiment_config.robot.control.clip_actions must be a boolean";
+          return false;
+        }
+        training_action_clip_enabled_ = control.at("clip_actions").get<bool>();
+      }
       if (control.contains("action_clip_value")) {
         const auto &value = control.at("action_clip_value");
         if (!value.is_number()) {
           error = "experiment_config.robot.control.action_clip_value must be a finite positive number";
           return false;
         }
-        action_clip_ = value.get<float>();
-        if (!std::isfinite(action_clip_) || action_clip_ <= 0.0f) {
+        const float declared_clip = value.get<float>();
+        if (!std::isfinite(declared_clip) || declared_clip <= 0.0f) {
           error = "experiment_config.robot.control.action_clip_value must be a finite positive number";
           return false;
         }
-        action_clip_from_metadata_ = true;
+        if (training_action_clip_enabled_) {
+          action_clip_ = declared_clip;
+          action_clip_from_metadata_ = true;
+        }
       }
     }
 

@@ -260,6 +260,15 @@ def main() -> None:
     ):
         _write_model(output / f"bad_action_clip_{name}.onnx", control={"action_clip_value": value})
     _write_model(output / "bad_history_mode.onnx", history_initialization="repeat_latest")
+    for enabled in (False, True):
+        for value in (50, 150):
+            _write_model(
+                output / f"action_flag_{str(enabled).lower()}_{value}.onnx",
+                control={"clip_actions": enabled, "action_clip_value": 20},
+                constant_action=value,
+                action_scale=0.25,
+            )
+    _write_model(output / "bad_clip_actions.onnx", control={"clip_actions": "false", "action_clip_value": 20})
 
 
 if __name__ == "__main__":

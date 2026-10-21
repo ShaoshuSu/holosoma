@@ -125,6 +125,7 @@ class WbtPolicy {
   float action_clip_ = kLegacyActionClip;
   bool history_from_metadata_ = false;
   bool action_clip_from_metadata_ = false;
+  bool training_action_clip_enabled_ = true;
   std::uint64_t tick_ = 0;
 
   bool heading_initialized_ = false;

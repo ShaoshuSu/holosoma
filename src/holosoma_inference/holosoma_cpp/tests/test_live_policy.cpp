@@ -325,6 +325,26 @@ TEST(WbtPolicyMetadata, LogsCompatibilitySettingsOnlyAtLoad) {
   EXPECT_TRUE(stepping.empty());
 }
 
+TEST(WbtPolicyMetadata, DisabledTrainingClipRetainsOnlyTheCompatibilityCeiling) {
+  WbtPolicy policy;
+  for (const auto &entry :
+       {std::make_pair("action_flag_false_50.onnx", 50.0f), std::make_pair("action_flag_false_150.onnx", 100.0f),
+        std::make_pair("action_flag_true_50.onnx", 20.0f), std::make_pair("action_flag_true_150.onnx", 20.0f)}) {
+    SCOPED_TRACE(entry.first);
+    ASSERT_TRUE(policy.Initialize(Model(entry.first)));
+    std::array<float, kActionDim> action{};
+    for (int tick = 0; tick < 2; ++tick) {
+      ASSERT_TRUE(policy.ComputeAction(Obs(), Sequence(1, 10), action.data()));
+      for (int joint = 0; joint < kActionDim; ++joint) {
+        const float expected = joint % 2 ? -entry.second : entry.second;
+        EXPECT_FLOAT_EQ(action[joint], expected * 0.25f);
+        EXPECT_FLOAT_EQ(policy.LastObservation()[128 + joint], tick == 0 ? 0.0f : expected);
+      }
+    }
+  }
+  EXPECT_FALSE(policy.Initialize(Model("bad_clip_actions.onnx")));
+}
+
 TEST(WbtPolicyObservation, FlatTargetsUseFunctionLeavesAndIndependentGroupHistories) {
   for (bool short_horizon : {false, true}) {
     SCOPED_TRACE(short_horizon);
