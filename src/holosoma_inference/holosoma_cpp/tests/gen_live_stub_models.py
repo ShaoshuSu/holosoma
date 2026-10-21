@@ -140,8 +140,14 @@ def _write_model(
     lookahead_layout: str | None = None,
     width_delta: int = 0,
     flat_error: str = "",
+    history_initialization: str | None = None,
+    control: dict | None = None,
+    constant_action: float | None = None,
+    action_scale: float = 1.0,
 ) -> None:
     experiment, width = _experiment(body_name, history, lookahead_layout)
+    if control is not None:
+        experiment["robot"]["control"] = control
     width += width_delta
     if flat_error:
         targets = experiment["observation"]["groups"]["actor_targets"]
@@ -163,6 +169,15 @@ def _write_model(
     indices = numpy_helper.from_array(np.arange(ACTION_DIM, dtype=np.int64), name="indices")
     gather = helper.make_node("Gather", ["obs", "indices"], ["actions"], axis=1)
     graph = helper.make_graph([gather], "wbt_stub", [obs, time_step], [actions], initializer=[indices])
+    if constant_action is not None:
+        values = np.full((1, ACTION_DIM), constant_action, dtype=np.float32)
+        values[:, 1::2] *= -1  # Bind both clipping polarities.
+        graph = helper.make_graph(
+            [helper.make_node("Constant", [], ["actions"], value=numpy_helper.from_array(values))],
+            "clip_stub",
+            [obs, time_step],
+            [actions],
+        )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 17)])
     model.ir_version = 9
 
@@ -170,10 +185,12 @@ def _write_model(
         "robot_urdf": json.dumps(_urdf()),
         "kp": json.dumps([40.0 + index for index in range(ACTION_DIM)]),
         "kd": json.dumps([4.0 + 0.1 * index for index in range(ACTION_DIM)]),
-        "action_scale": json.dumps([1.0] * ACTION_DIM),
+        "action_scale": json.dumps([action_scale] * ACTION_DIM),
         "dof_names": json.dumps(DOF_NAMES),
         "experiment_config": json.dumps(experiment),
     }
+    if history_initialization is not None:
+        metadata["wbt_history_initialization"] = history_initialization
     for key, value in metadata.items():
         item = model.metadata_props.add()
         item.key = key
@@ -211,6 +228,38 @@ def main() -> None:
     _write_model(output / "sonic_flat_0p2s.onnx", history=9, lookahead_layout="flat_0p2s")
     for error in ("missing", "mixed", "history"):
         _write_model(output / f"flat_bad_{error}.onnx", history=9, lookahead_layout="flat_0p2s", flat_error=error)
+
+    for mode in (None, "zero", "repeat_first"):
+        _write_model(
+            output / f"history_{mode or 'absent'}.onnx",
+            history=3,
+            lookahead_layout="split",
+            history_initialization=mode,
+        )
+    _write_model(
+        output / "flat_repeat_first.onnx",
+        history=9,
+        lookahead_layout="flat_0p2s",
+        history_initialization="repeat_first",
+    )
+    for value in (50.0, 150.0):
+        for limit in (None, 20.0):
+            _write_model(
+                output / f"action_{int(value)}_clip_{int(limit) if limit else 'absent'}.onnx",
+                control={"action_clip_value": limit} if limit else None,
+                constant_action=value,
+                action_scale=0.25,
+            )
+    for name, value in (
+        ("zero", 0),
+        ("negative", -1),
+        ("string", "20"),
+        ("bool", True),
+        ("null", None),
+        ("overflow", 1e300),
+    ):
+        _write_model(output / f"bad_action_clip_{name}.onnx", control={"action_clip_value": value})
+    _write_model(output / "bad_history_mode.onnx", history_initialization="repeat_latest")
 
 
 if __name__ == "__main__":

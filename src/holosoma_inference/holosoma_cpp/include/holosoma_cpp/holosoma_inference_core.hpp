@@ -64,6 +64,11 @@ class WbtPolicy {
   static bool IsWbtModelFile(const std::string &model_path);
 
  private:
+  enum class HistoryInitialization { kZero, kRepeatFirst };
+  // Compatibility contract for exports that predate these metadata fields.
+  static constexpr HistoryInitialization kLegacyHistoryInitialization = HistoryInitialization::kZero;
+  static constexpr float kLegacyActionClip = 100.0f;
+
   enum class TermKind {
     kMotionCommand,
     kMotionCommandLookahead,
@@ -116,6 +121,10 @@ class WbtPolicy {
   std::vector<int> trained_lookahead_offsets_;
   int motion_command_dim_ = 0;
   float observation_clip_ = 100.0f;
+  HistoryInitialization history_initialization_ = kLegacyHistoryInitialization;
+  float action_clip_ = kLegacyActionClip;
+  bool history_from_metadata_ = false;
+  bool action_clip_from_metadata_ = false;
   std::uint64_t tick_ = 0;
 
   bool heading_initialized_ = false;

@@ -91,6 +91,20 @@ TEST(PolicyApi, RejectsInvalidWindowsAndCanRecoverWithoutReloading) {
   EXPECT_THROW(policy.step(state), std::runtime_error);
 }
 
+TEST(PolicyApi, ExportedHistoryAndClipReachJointCommands) {
+  Policy clipped(live_policy_config(model("action_50_clip_20.onnx")));
+  auto window = reference_window(1);
+  clipped.set_reference(&window);
+  const auto& command = clipped.step(robot_state());
+  for (int joint = 0; joint < 29; ++joint) EXPECT_NEAR(command.q[joint], 0.01 * joint + (joint % 2 ? -5.0 : 5.0), 1e-6);
+
+  Policy repeated(live_policy_config(model("history_repeat_first.onnx")));
+  window = reference_window(10);
+  window.q.assign(290, 1.0);
+  repeated.set_reference(&window);
+  EXPECT_NEAR(repeated.step(robot_state()).q[0], 1.0, 1e-6);
+}
+
 TEST(PolicyApi, AllLiveLayoutsPreserveTimingResetAndCurrentReference) {
   for (const auto* name :
        {"pelvis.onnx", "torso.onnx", "split_history.onnx", "legacy_history.onnx", "sonic_flat.onnx"}) {

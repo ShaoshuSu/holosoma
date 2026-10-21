@@ -212,11 +212,18 @@ bool WbtPolicy::Initialize(std::shared_ptr<holosoma::OnnxModel> session) {
   initialized_ = true;
   std::cout << "[WbtPolicy] Loaded holosoma WBT model " << model_path << " (obs=" << obs_input_.size()
             << ", anchor=" << anchor_body_name_ << ", lookahead=" << trained_lookahead_offsets_.size() << " slots / "
-            << TrainedLookaheadFrames() << " trained frames)" << std::endl;
+            << TrainedLookaheadFrames() << " trained frames, history="
+            << (history_initialization_ == HistoryInitialization::kRepeatFirst ? "repeat_first" : "zero")
+            << (history_from_metadata_ ? " [metadata]" : " [compatibility default]") << ", action_clip=" << action_clip_
+            << (action_clip_from_metadata_ ? " [metadata]" : " [compatibility default]") << ")" << std::endl;
   return true;
 }
 
 bool WbtPolicy::ParseMetadata(std::string &error) {
+  history_initialization_ = kLegacyHistoryInitialization;
+  action_clip_ = kLegacyActionClip;
+  history_from_metadata_ = false;
+  action_clip_from_metadata_ = false;
   std::string stage = "reading the custom metadata map";
   try {
     std::unordered_map<std::string, std::string> metadata;
@@ -270,6 +277,41 @@ bool WbtPolicy::ParseMetadata(std::string &error) {
     } catch (const std::exception &e) {
       error = std::string("cannot parse metadata experiment_config: ") + e.what();
       return false;
+    }
+
+    stage = "parsing wbt_history_initialization";
+    const auto history = metadata.find("wbt_history_initialization");
+    if (history != metadata.end()) {
+      if (history->second == "repeat_first") {
+        history_initialization_ = HistoryInitialization::kRepeatFirst;
+      } else if (history->second != "zero") {
+        error = "metadata wbt_history_initialization must be zero or repeat_first";
+        return false;
+      }
+      history_from_metadata_ = true;
+    }
+
+    stage = "parsing experiment_config.robot.control.action_clip_value";
+    const auto &robot = experiment.at("robot");
+    if (robot.contains("control")) {
+      const auto &control = robot.at("control");
+      if (!control.is_object()) {
+        error = "experiment_config.robot.control must be an object";
+        return false;
+      }
+      if (control.contains("action_clip_value")) {
+        const auto &value = control.at("action_clip_value");
+        if (!value.is_number()) {
+          error = "experiment_config.robot.control.action_clip_value must be a finite positive number";
+          return false;
+        }
+        action_clip_ = value.get<float>();
+        if (!std::isfinite(action_clip_) || action_clip_ <= 0.0f) {
+          error = "experiment_config.robot.control.action_clip_value must be a finite positive number";
+          return false;
+        }
+        action_clip_from_metadata_ = true;
+      }
     }
 
     stage = "parsing default_joint_angles";
@@ -700,7 +742,11 @@ bool WbtPolicy::ComputeAction(const RobotObservation &obs, const WbtReferenceSeq
   std::size_t output_offset = 0;
   for (std::size_t i = 0; i < terms_.size(); ++i) {
     Term &term = terms_[i];
-    term.history.push_back(values[i]);
+    if (term.history.empty() && history_initialization_ == HistoryInitialization::kRepeatFirst) {
+      term.history.assign(static_cast<std::size_t>(term.history_length), values[i]);
+    } else {
+      term.history.push_back(values[i]);
+    }
     while (term.history.size() > static_cast<std::size_t>(term.history_length)) term.history.pop_front();
 
     const int missing = term.history_length - static_cast<int>(term.history.size());
@@ -733,7 +779,7 @@ bool WbtPolicy::ComputeAction(const RobotObservation &obs, const WbtReferenceSeq
         std::cerr << "[WbtPolicy] ONNX produced a non-finite action" << std::endl;
         return false;
       }
-      last_action_[i] = std::clamp(raw[i], -100.0f, 100.0f);
+      last_action_[i] = std::clamp(raw[i], -action_clip_, action_clip_);
       action_out[i] = last_action_[i] * action_scale_[i];
     }
   } catch (const std::exception &e) {
