@@ -397,6 +397,35 @@ TEST(WbtPolicyMetadata, LogsTheEffectiveContractAndAnyRuntimeOverride) {
   }
 }
 
+TEST(WbtPolicyActionClip, RawAndClippedActionsAreReadableEvenWithAZeroActionScale) {
+  WbtPolicy policy;
+  ASSERT_TRUE(policy.Initialize(Model("action_150_scale_0.onnx")));
+  std::array<float, kActionDim> action{};
+  ASSERT_TRUE(policy.ComputeAction(Obs(), Sequence(1, 10), action.data()));
+  for (int joint = 0; joint < kActionDim; ++joint) {
+    const float sign = joint % 2 ? -1.0f : 1.0f;
+    EXPECT_FLOAT_EQ(action[joint], 0.0f);  // a zero scale hides the action from the scaled output
+    EXPECT_FLOAT_EQ(policy.LastRawAction()[joint], 150.0f * sign);
+    EXPECT_FLOAT_EQ(policy.LastClippedAction()[joint], 20.0f * sign);
+  }
+  policy.Reset();
+  for (int joint = 0; joint < kActionDim; ++joint) {
+    EXPECT_FLOAT_EQ(policy.LastRawAction()[joint], 0.0f);
+    EXPECT_FLOAT_EQ(policy.LastClippedAction()[joint], 0.0f);
+  }
+}
+
+TEST(WbtPolicyActionClip, ANonFiniteActionLeavesTheLastActionsUntouched) {
+  WbtPolicy policy;
+  ASSERT_TRUE(policy.Initialize(Model("action_50_nan_last.onnx")));
+  std::array<float, kActionDim> action{};
+  EXPECT_FALSE(policy.ComputeAction(Obs(), Sequence(1, 10), action.data()));
+  for (int joint = 0; joint < kActionDim; ++joint) {
+    EXPECT_FLOAT_EQ(policy.LastRawAction()[joint], 0.0f);
+    EXPECT_FLOAT_EQ(policy.LastClippedAction()[joint], 0.0f);  // also the next step's action feedback
+  }
+}
+
 TEST(WbtPolicyMetadata, DisabledTrainingClipStillUsesTheCeiling) {
   WbtPolicy policy;
   for (const auto &entry :

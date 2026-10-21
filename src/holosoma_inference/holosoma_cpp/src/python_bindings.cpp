@@ -224,6 +224,8 @@ PYBIND11_MODULE(_native, m) {
       .def("reset_heading", &live::WbtPolicy::ResetHeading)
       .def("lookahead_offsets", &live::WbtPolicy::LookaheadSampleOffsets)
       .def_property_readonly("last_observation", &live::WbtPolicy::LastObservation)
+      .def_property_readonly("last_raw_action", &live::WbtPolicy::LastRawAction)
+      .def_property_readonly("last_clipped_action", &live::WbtPolicy::LastClippedAction)
       .def_property_readonly("kp", &live::WbtPolicy::Kp)
       .def_property_readonly("kd", &live::WbtPolicy::Kd);
 }

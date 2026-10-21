@@ -144,6 +144,7 @@ def _write_model(
     control: dict | None = None,
     constant_action: float | None = None,
     action_scale: float = 1.0,
+    nonfinite_last_action: bool = False,
 ) -> None:
     experiment, width = _experiment(body_name, history, lookahead_layout)
     if control is not None:
@@ -172,6 +173,8 @@ def _write_model(
     if constant_action is not None:
         values = np.full((1, ACTION_DIM), constant_action, dtype=np.float32)
         values[:, 1::2] *= -1  # Bind both clipping polarities.
+        if nonfinite_last_action:
+            values[0, -1] = np.nan
         graph = helper.make_graph(
             [helper.make_node("Constant", [], ["actions"], value=numpy_helper.from_array(values))],
             "clip_stub",
@@ -274,6 +277,8 @@ def main() -> None:
         constant_action=50,
         action_scale=0.25,
     )
+    _write_model(output / "action_150_scale_0.onnx", constant_action=150.0, action_scale=0.0)
+    _write_model(output / "action_50_nan_last.onnx", constant_action=50.0, nonfinite_last_action=True)
     _write_model(output / "bad_clip_actions.onnx", control={"clip_actions": "false", "action_clip_value": 20})
 
 

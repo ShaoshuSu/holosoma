@@ -77,6 +77,11 @@ class WbtPolicy {
   const std::array<float, kActionDim> &Kp() const { return kp_; }
   const std::array<float, kActionDim> &Kd() const { return kd_; }
   const std::vector<float> &LastObservation() const { return obs_input_; }
+  // The model's raw action output and the clipped action from the last successful
+  // ComputeAction, before action scale. The clipped action is the previous-action
+  // feedback. Both are zero after Reset().
+  const std::array<float, kActionDim> &LastRawAction() const { return last_raw_action_; }
+  const std::array<float, kActionDim> &LastClippedAction() const { return last_action_; }
   bool HeadingInitialized() const { return heading_initialized_; }
   bool IsInitialized() const { return initialized_; }
   const std::string &AnchorBodyName() const { return anchor_body_name_; }
@@ -132,6 +137,7 @@ class WbtPolicy {
   std::array<float, kActionDim> kd_{};
   std::array<float, kActionDim> action_scale_{};
   std::array<float, kActionDim> last_action_{};
+  std::array<float, kActionDim> last_raw_action_{};
 
   std::vector<Term> terms_;
   std::vector<int> trained_lookahead_offsets_;

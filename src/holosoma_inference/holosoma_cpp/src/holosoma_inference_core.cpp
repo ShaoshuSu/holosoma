@@ -822,6 +822,9 @@ bool WbtPolicy::ComputeAction(const RobotObservation &obs, const WbtReferenceSeq
         std::cerr << "[WbtPolicy] ONNX produced a non-finite action" << std::endl;
         return false;
       }
+    }
+    for (int i = 0; i < kActionDim; ++i) {
+      last_raw_action_[i] = raw[i];
       last_action_[i] = std::clamp(raw[i], -action_clip_, action_clip_);
       action_out[i] = last_action_[i] * action_scale_[i];
     }
@@ -891,6 +894,7 @@ void WbtPolicy::ResetHeading() {
 void WbtPolicy::Reset() {
   ResetHeading();
   last_action_.fill(0.0f);
+  last_raw_action_.fill(0.0f);
   for (Term &term : terms_) term.history.clear();
   std::fill(obs_input_.begin(), obs_input_.end(), 0.0f);
 }

@@ -579,6 +579,8 @@ def test_live_wbt_policy_reports_and_applies_the_effective_action_clip(tmp_path,
     targets = np.asarray(policy.step(observation, reference)).reshape(-1) - 0.01 * np.arange(29)
     expected = np.where(np.arange(29) % 2, -clip, clip) * 0.25
     np.testing.assert_allclose(targets, expected, rtol=1e-6)
+    np.testing.assert_allclose(policy.last_raw_action, np.where(np.arange(29) % 2, -raw, raw))
+    np.testing.assert_allclose(policy.last_clipped_action, np.where(np.arange(29) % 2, -clip, clip))
 
 
 def test_live_wbt_policy_rejects_an_unknown_history_initialization(tmp_path):
