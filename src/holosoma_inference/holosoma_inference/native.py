@@ -19,7 +19,7 @@ def get_config(name: str) -> InferenceConfig:
     from holosoma_inference.utils.config_registry import load_plugins
 
     load_plugins()
-    return copy.deepcopy(INFERENCE_REGISTRY[name[len("inference:") :] if name.startswith("inference:") else name])
+    return copy.deepcopy(INFERENCE_REGISTRY[name.removeprefix("inference:")])
 
 
 def _native_config(config: InferenceConfig, *, use_gpu=False) -> str:
