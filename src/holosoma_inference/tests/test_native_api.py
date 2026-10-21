@@ -388,8 +388,10 @@ def test_runner_waits_for_first_valid_state_without_inferring_or_publishing(nati
     assert runner.policy_action() is False
     assert interface.sent == []
     assert runner.native.last_observation.size == 0
+    assert not runner.use_policy_action
     assert runner.policy_action() is True
     assert len(interface.sent) == 1
+    assert runner.use_policy_action
 
 
 def test_runner_fails_when_no_valid_state_arrives_within_the_startup_timeout(native_config):
@@ -403,14 +405,76 @@ def test_runner_fails_when_no_valid_state_arrives_within_the_startup_timeout(nat
     assert interface.sent == []
 
 
-def test_runner_rejects_an_invalid_state_once_running(native_config):
+@pytest.mark.parametrize(
+    ("invalid_state", "message"),
+    [(_low_state(quat=(0.0, 0.0, 0.0, 0.0)), "orientation must be nonzero"), (_low_state(i7=np.nan), "finite")],
+    ids=["zero-orientation", "nonfinite-joint"],
+)
+def test_runner_rejects_an_invalid_state_once_running(native_config, invalid_state, message):
     config, _ = native_config
-    interface = _ScriptedInterface(_low_state(), _low_state(quat=(0.0, 0.0, 0.0, 0.0)))
+    interface = _ScriptedInterface(_low_state(), invalid_state)
     runner = _runner(config, interface)
     assert runner.policy_action() is True
-    with pytest.raises(ValueError, match="orientation must be nonzero"):
+    with pytest.raises(ValueError, match=message):
         runner.policy_action()
     assert len(interface.sent) == 1
+
+
+def test_headless_auto_start_waits_for_the_first_valid_state(native_config):
+    config, _ = native_config
+    interface = _ScriptedInterface(_low_state(quat=(0.0, 0.0, 0.0, 0.0)), _low_state())
+    runner = _runner(config, interface)
+    runner.use_policy_action = True
+    assert not runner.native._engine.active
+    assert runner.policy_action() is False
+    assert not runner.native._engine.active
+    assert runner.policy_action() is True
+    assert runner.native._engine.active
+
+
+def test_stop_while_waiting_cancels_a_pending_auto_start(native_config):
+    config, _ = native_config
+    interface = _ScriptedInterface(_low_state(quat=(0.0, 0.0, 0.0, 0.0)), _low_state())
+    runner = _runner(config, interface)
+    runner.use_policy_action = True
+    runner._handle_stop_policy()
+    assert runner.policy_action() is False
+    assert runner.policy_action() is True
+    assert not runner.native._engine.active
+
+
+def test_runner_does_not_advance_phase_while_waiting(native_config):
+    config, _ = native_config
+    interface = _ScriptedInterface(_low_state(quat=(0.0, 0.0, 0.0, 0.0)), _low_state())
+    runner = _runner(config, interface)
+
+    class PhaseSpy:
+        def __init__(self, engine):
+            self.engine, self.updates = engine, 0
+
+        def update_phase(self):
+            self.updates += 1
+            self.engine.update_phase()
+
+        def __getattr__(self, name):
+            return getattr(self.engine, name)
+
+    spy = runner.native._engine = PhaseSpy(runner.native._engine)
+    runner.update_phase_time()
+    assert runner.policy_action() is False
+    runner.update_phase_time()
+    assert spy.updates == 0
+    assert runner.policy_action() is True
+    runner.update_phase_time()
+    assert spy.updates == 1
+
+
+def test_initially_valid_state_takes_the_fast_path(native_config):
+    config, _ = native_config
+    interface = _ScriptedInterface(_low_state())
+    runner = _runner(config, interface)
+    assert runner.policy_action() is True
+    assert runner._state_wait_started is None
 
 
 def test_runner_ignores_start_until_a_valid_state_arrives(native_config):

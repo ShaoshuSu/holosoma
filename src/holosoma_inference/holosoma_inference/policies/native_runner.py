@@ -46,6 +46,7 @@ class NativeRunnerPolicy(RunnerTransport):
         self.cmd_q = np.zeros(self.num_dofs)
         self._state_ready = False
         self._state_wait_started = None
+        self._start_pending = False
         self._commands_sent = 0
         self._clock = clock
         self._owns_clock = False
@@ -86,6 +87,10 @@ class NativeRunnerPolicy(RunnerTransport):
 
     @use_policy_action.setter
     def use_policy_action(self, value):
+        if not getattr(self, "_state_ready", False):
+            # Headless auto-start: engage only once the first valid state has arrived.
+            self._start_pending = bool(value)
+            return
         self.native.command("START" if value else "STOP")
 
     @property
@@ -113,7 +118,8 @@ class NativeRunnerPolicy(RunnerTransport):
         self.native.velocity(float(command.lin_vel[0]), float(command.lin_vel[1]), float(command.ang_vel))
 
     def update_phase_time(self):
-        self.native._engine.update_phase()
+        if self._state_ready:
+            self.native._engine.update_phase()
 
     def _init_phase_components(self):
         self.native.reset()
@@ -167,8 +173,17 @@ class NativeRunnerPolicy(RunnerTransport):
         now = time.monotonic()
         if _is_valid_state(state):
             waited = 0.0 if self._state_wait_started is None else now - self._state_wait_started
-            self.logger.info("Received first valid robot state after {:.2f}s", waited)
+            values = np.asarray(state, dtype=np.float64).reshape(-1)
+            self.logger.info(
+                "Received first valid robot state after {:.2f}s: quat_wxyz={} with {} finite joint positions",
+                waited,
+                np.round(values[3:7], 4).tolist(),
+                self.num_dofs,
+            )
             self._state_ready = True
+            if self._start_pending:
+                self._start_pending = False
+                self._handle_start_policy()
             return True
         timeout = self.config.task.startup_state_timeout
         if self._state_wait_started is None:
@@ -191,6 +206,7 @@ class NativeRunnerPolicy(RunnerTransport):
             self.interface.no_action = 0
 
     def _handle_stop_policy(self):
+        self._start_pending = False
         self.native.command("STOP")
         if hasattr(self.interface, "no_action"):
             self.interface.no_action = 0 if self.is_wbt else 1
