@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import sys
+import time
 
 import numpy as np
 
 from holosoma_inference.inputs.api.commands import StateCommand
 from holosoma_inference.native import NativePolicy
 from holosoma_inference.policies.transport import RunnerTransport
+
+
+def _is_valid_state(state) -> bool:
+    """A finite state whose orientation can be normalised; zeros mean no message yet."""
+    values = np.asarray(state, dtype=np.float64).reshape(-1)
+    return bool(np.isfinite(values).all() and np.dot(values[3:7], values[3:7]) >= 1e-16)
 
 
 class NativeRunnerPolicy(RunnerTransport):
@@ -37,6 +44,9 @@ class NativeRunnerPolicy(RunnerTransport):
         self.use_keyboard = False
         self.use_joystick = bool({"interface", "joystick"} & {config.task.velocity_input, config.task.state_input})
         self.cmd_q = np.zeros(self.num_dofs)
+        self._state_ready = False
+        self._state_wait_started = None
+        self._commands_sent = 0
         self._clock = clock
         self._owns_clock = False
         self._owns_inputs = velocity_input is None and command_provider is None and shared_hardware is None
@@ -136,7 +146,7 @@ class NativeRunnerPolicy(RunnerTransport):
         elif command == StateCommand.INIT:
             self._handle_init_state()
         else:
-            if self.is_wbt:
+            if self.is_wbt and self._state_ready:
                 self.native.set_state(self.interface.get_low_state(), tick_ms=self._tick_ms())
             self.native.command(command)
         self._resolve_control_gains()
@@ -146,7 +156,35 @@ class NativeRunnerPolicy(RunnerTransport):
     def _on_policy_switched(self, model_path):
         """Observe a native model switch without replacing inference."""
 
+    def _await_valid_state(self, state) -> bool:
+        """Return True once a valid robot state has arrived; fail after the startup timeout.
+
+        Only the first valid state is waited for. Afterwards every state goes to the
+        native engine, which rejects an invalid one.
+        """
+        if self._state_ready:
+            return True
+        now = time.monotonic()
+        if _is_valid_state(state):
+            waited = 0.0 if self._state_wait_started is None else now - self._state_wait_started
+            self.logger.info("Received first valid robot state after {:.2f}s", waited)
+            self._state_ready = True
+            return True
+        timeout = self.config.task.startup_state_timeout
+        if self._state_wait_started is None:
+            self._state_wait_started = now
+            self.logger.info("Waiting up to {:.1f}s for a valid robot state...", timeout)
+        elif now - self._state_wait_started > timeout:
+            raise TimeoutError(
+                f"No valid robot state within {timeout:g}s (--task.startup-state-timeout): "
+                "check that the robot or simulator is publishing low state on the configured interface"
+            )
+        return False
+
     def _handle_start_policy(self):
+        if not self._state_ready:
+            self.logger.warning("Ignoring start: no valid robot state received yet")
+            return
         self.native.set_state(self.interface.get_low_state(), tick_ms=self._tick_ms())
         self.native.command("START")
         if hasattr(self.interface, "no_action"):
@@ -164,6 +202,8 @@ class NativeRunnerPolicy(RunnerTransport):
 
     def policy_action(self):
         state = self.interface.get_low_state()
+        if not self._await_valid_state(state):
+            return False
         command = self.native.step_state(state, tick_ms=self._tick_ms(), advance_phase=False)
         transformed = self.transform_command(command, state) or {}
         q = np.asarray(transformed.get("q", command.q), dtype=float).reshape(-1)
@@ -183,6 +223,10 @@ class NativeRunnerPolicy(RunnerTransport):
             kd_override=kd,
         )
         self._on_command_sent(self.cmd_q, state)
+        self._commands_sent += 1
+        if self._commands_sent == 1:
+            self.logger.info("Sent first native command: finite q/kp/kd for {} joints", self.num_dofs)
+        return True
 
     def transform_command(self, command, robot_state_data):
         """Optional robot-specific output adaptation; inference remains native.

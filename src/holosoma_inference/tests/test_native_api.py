@@ -5,6 +5,7 @@ import json
 import runpy
 import subprocess
 import sys
+import time
 import weakref
 from dataclasses import replace
 from importlib.resources import files
@@ -331,3 +332,97 @@ def test_invalid_robot_output_transform_never_reaches_transport(native_config, o
     runner = Runner(config, interface=Interface(), velocity_input=inputs, command_provider=inputs)
     with pytest.raises(ValueError, match=message):
         runner.policy_action()
+
+
+class _ScriptedInterface:
+    """Return scripted low states (the last one repeats) and record published commands."""
+
+    kp_level = kd_level = 1.0
+
+    def __init__(self, *states):
+        self.states = list(states)
+        self.sent = []
+
+    def get_low_state(self):
+        return self.states.pop(0) if len(self.states) > 1 else self.states[0]
+
+    def send_low_command(self, *args, **kwargs):
+        self.sent.append(kwargs)
+
+
+class _NoInput:
+    def poll_velocity(self):
+        return None
+
+    def poll_commands(self):
+        return []
+
+
+def _low_state(quat=(1.0, 0.0, 0.0, 0.0), **values):
+    state = np.zeros((1, 71))
+    state[0, 3:7] = quat
+    for index, value in values.items():
+        state[0, int(index.removeprefix("i"))] = value
+    return state
+
+
+def _runner(config, interface, **task):
+    from holosoma_inference.policies.native_runner import NativeLocomotionRunner
+
+    config = replace(config, task=replace(config.task, **task))
+    inputs = _NoInput()
+    return NativeLocomotionRunner(config, interface=interface, velocity_input=inputs, command_provider=inputs)
+
+
+@pytest.mark.parametrize(
+    "waiting_state",
+    [_low_state(quat=(0.0, 0.0, 0.0, 0.0)), _low_state(i7=np.nan), _low_state(quat=(np.inf, 0.0, 0.0, 0.0))],
+    ids=["no-message-yet", "nonfinite-joint", "nonfinite-orientation"],
+)
+def test_runner_waits_for_first_valid_state_without_inferring_or_publishing(native_config, waiting_state):
+    config, _ = native_config
+    interface = _ScriptedInterface(waiting_state, waiting_state, _low_state())
+    runner = _runner(config, interface)
+    runner.use_policy_action = True
+    assert runner.policy_action() is False
+    assert runner.policy_action() is False
+    assert interface.sent == []
+    assert runner.native.last_observation.size == 0
+    assert runner.policy_action() is True
+    assert len(interface.sent) == 1
+
+
+def test_runner_fails_when_no_valid_state_arrives_within_the_startup_timeout(native_config):
+    config, _ = native_config
+    interface = _ScriptedInterface(_low_state(quat=(0.0, 0.0, 0.0, 0.0)))
+    runner = _runner(config, interface, startup_state_timeout=0.05)
+    assert runner.policy_action() is False
+    time.sleep(0.1)
+    with pytest.raises(TimeoutError, match="startup-state-timeout"):
+        runner.policy_action()
+    assert interface.sent == []
+
+
+def test_runner_rejects_an_invalid_state_once_running(native_config):
+    config, _ = native_config
+    interface = _ScriptedInterface(_low_state(), _low_state(quat=(0.0, 0.0, 0.0, 0.0)))
+    runner = _runner(config, interface)
+    assert runner.policy_action() is True
+    with pytest.raises(ValueError, match="orientation must be nonzero"):
+        runner.policy_action()
+    assert len(interface.sent) == 1
+
+
+def test_runner_ignores_start_until_a_valid_state_arrives(native_config):
+    config, _ = native_config
+    interface = _ScriptedInterface(_low_state(quat=(0.0, 0.0, 0.0, 0.0)))
+    runner = _runner(config, interface)
+    runner._handle_start_policy()
+    assert not runner.use_policy_action
+
+
+@pytest.mark.parametrize("timeout", [0.0, -1.0, float("inf"), float("nan")])
+def test_startup_state_timeout_must_be_a_positive_finite_duration(native_config, timeout):
+    config, _ = native_config
+    with pytest.raises(ValueError, match="startup-state-timeout"):
+        replace(config.task, startup_state_timeout=timeout)

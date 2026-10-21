@@ -266,7 +266,7 @@ TaskConfig parse_task(const YAML::Node& node, const std::string& path, const std
   }
 
   for (const char* key : {"joystick_type", "joystick_device", "ros_cmd_vel_topic", "ros_state_input_topic",
-                          "ros_vel_timeout", "residual_upper_body_action"}) {
+                          "ros_vel_timeout", "residual_upper_body_action", "startup_state_timeout"}) {
     r.ignore(key);
   }
   r.finish();

@@ -94,9 +94,10 @@ class RunnerTransport:
                     self._print_control_status()
                 if self.use_phase:
                     self.update_phase_time()
-                self.policy_action()
+                sent = self.policy_action()
                 self.latency_tracker.end_cycle()
-                if tick % 50 == 0 and self.use_policy_action:
+                # An idle loop is not inference: report FPS only for ticks that sent a command.
+                if tick % 50 == 0 and self.use_policy_action and sent is not False:
                     self.logger.info("RL FPS: {:.2f}", self.latency_tracker.get_fps())
                 self.rate.sleep()
         except KeyboardInterrupt:

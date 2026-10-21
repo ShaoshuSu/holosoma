@@ -6,11 +6,15 @@ ensuring they start up correctly and emit inference output within 15 seconds.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import os
 import re
 import shlex
 import signal
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -100,7 +104,49 @@ def _run_inference_command(command: str, timeout: float) -> tuple[int, str, bool
         _signal_process_group(process, signal.SIGKILL)
 
 
-def assert_run_policy_with_hsinference(config_name: str, model_path: str, timeout: float = 15) -> None:
+def _activate() -> str:
+    return f"source {shlex.quote(str(REPO_ROOT / 'scripts/source_inference_setup.sh'))} && "
+
+
+def setup_hsinference() -> None:
+    """Install the working tree into the hsinference environment."""
+    setup_code, setup_output, setup_timed_out = _run_inference_command(
+        _activate() + f"pip install -e {shlex.quote(str(REPO_ROOT / 'src/holosoma_inference') + '[unitree,booster]')}",
+        timeout=_SETUP_TIMEOUT,
+    )
+    assert not setup_timed_out, f"Setup timed out after {_SETUP_TIMEOUT}s. Output: {setup_output}"
+    assert setup_code == 0, f"Setup exited with {setup_code}. Output: {setup_output}"
+
+
+def run_policy_with_hsinference(
+    config_name: str, model_path: str, timeout: float = 15, extra_args: tuple[str, ...] = ()
+) -> tuple[int, str, bool]:
+    """Run run_policy in the hsinference environment; return (exit code, output, timed out)."""
+    return _run_inference_command(
+        _activate()
+        + shlex.join(
+            [
+                "python",
+                str(REPO_ROOT / "src/holosoma_inference/holosoma_inference/run_policy.py"),
+                f"inference:{config_name}",
+                f"--task.model-path={model_path}",
+                "--secondary",
+                "none",
+                *extra_args,
+            ]
+        ),
+        timeout=timeout,
+    )
+
+
+def assert_run_policy_with_hsinference(
+    config_name: str,
+    model_path: str,
+    timeout: float = 15,
+    *,
+    setup: bool = True,
+    required_output: tuple[str, ...] = ("RL FPS:",),
+) -> None:
     """Run policy in hsinference environment with local checkpoint.
 
     Parameters
@@ -111,49 +157,99 @@ def assert_run_policy_with_hsinference(config_name: str, model_path: str, timeou
         Path to the ONNX model checkpoint
     timeout : float
         Policy observation window in seconds, excluding dependency installation
+    setup : bool
+        Install the working tree first; False when a fixture already did
+    required_output : tuple[str, ...]
+        Lines the policy must print within the window
     """
-    activate = f"source {shlex.quote(str(REPO_ROOT / 'scripts/source_inference_setup.sh'))} && "
-    setup_code, setup_output, setup_timed_out = _run_inference_command(
-        activate + f"pip install -e {shlex.quote(str(REPO_ROOT / 'src/holosoma_inference') + '[unitree,booster]')}",
-        timeout=_SETUP_TIMEOUT,
-    )
-    assert not setup_timed_out, f"Setup timed out after {_SETUP_TIMEOUT}s. Output: {setup_output}"
-    assert setup_code == 0, f"Setup exited with {setup_code}. Output: {setup_output}"
-    policy_code, output, timed_out = _run_inference_command(
-        activate
-        + shlex.join(
-            [
-                "python",
-                str(REPO_ROOT / "src/holosoma_inference/holosoma_inference/run_policy.py"),
-                f"inference:{config_name}",
-                f"--task.model-path={model_path}",
-                "--secondary",
-                "none",
-            ]
-        ),
-        timeout=timeout,
-    )
+    if setup:
+        setup_hsinference()
+    policy_code, output, timed_out = run_policy_with_hsinference(config_name, model_path, timeout)
     assert timed_out or policy_code == 0, f"Policy exited with {policy_code}. Output: {output}"
-    assert "RL FPS:" in output, f"Didn't find RL FPS in output! Output: {output}"
+    for line in required_output:
+        assert line in output, f"Didn't find {line!r} in output! Output: {output}"
+
+
+@contextlib.contextmanager
+def low_state_publisher(config_name: str, invalid_after: float | None = None, timeout: float = 60):
+    """Publish an upright standing low state for the policy, as the simulator bridge would."""
+    import holosoma_inference
+
+    robot = holosoma_inference.get_config(config_name).robot
+    motor_q = [0.0] * len(robot.default_dof_angles)
+    for joint, motor in enumerate(robot.joint2motor):
+        motor_q[motor] = robot.default_dof_angles[joint]
+    args = ["python", str(Path(__file__).with_name("low_state_publisher.py")), "--motor-q", json.dumps(motor_q)]
+    if invalid_after is not None:
+        args += ["--invalid-after", str(invalid_after)]
+    with tempfile.TemporaryFile("w+", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            ["/bin/bash", "-c", _activate() + shlex.join(args)],
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            start_new_session=True,
+        )
+
+        def output() -> str:
+            log.seek(0)
+            return log.read()
+
+        try:
+            deadline = time.monotonic() + timeout
+            while "low-state publisher running" not in output():
+                assert process.poll() is None, f"Publisher exited with {process.returncode}. Output: {output()}"
+                assert time.monotonic() < deadline, f"Publisher did not start. Output: {output()}"
+                time.sleep(0.1)
+            yield
+            assert process.poll() is None, f"Publisher died during the run. Output: {output()}"
+        finally:
+            _signal_process_group(process, signal.SIGTERM)
+            try:
+                process.wait(timeout=_STOP_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                _signal_process_group(process, signal.SIGKILL)
+                process.wait(timeout=_STOP_TIMEOUT)
+
+
+_INFERENCE_EVIDENCE = ("Received first valid robot state", "Sent first native command", "RL FPS:")
+
+
+@pytest.fixture(scope="module")
+def g1_checkpoint() -> str:
+    """Train and export a mini G1 policy once, and install inference once, for this module."""
+    checkpoint = run_mini_training("g1-29dof")
+    setup_hsinference()
+    return checkpoint
 
 
 @pytest.mark.requires_inference
-@pytest.mark.parametrize(
-    ("workflow_name", "config_name"),
-    [
-        ("g1-29dof", "g1-29dof-loco"),
-        # ("t1-29dof", "t1-29dof-loco"),
-    ],
-)
-def test_run_policy_with_trained_checkpoint(workflow_name: str, config_name: str):
-    """Train a mini model and test running it in hsinference environment.
+def test_run_policy_with_trained_checkpoint(g1_checkpoint: str):
+    """A trained, exported policy runs native inference on a live robot state and sends commands."""
+    with low_state_publisher("g1-29dof-loco"):
+        assert_run_policy_with_hsinference(
+            "g1-29dof-loco", g1_checkpoint, setup=False, required_output=_INFERENCE_EVIDENCE
+        )
 
-    Parameters
-    ----------
-    workflow_name : str
-        Training workflow name (e.g., 'g1-29dof')
-    config_name : str
-        Tyro subcommand name for run_policy (e.g., 'g1-29dof-loco')
-    """
-    checkpoint_path = run_mini_training(workflow_name)
-    assert_run_policy_with_hsinference(config_name, checkpoint_path)
+
+@pytest.mark.requires_inference
+def test_run_policy_fails_without_a_robot_state(g1_checkpoint: str):
+    """Control: with nothing publishing, the policy must fail at the startup timeout, not idle."""
+    code, output, timed_out = run_policy_with_hsinference(
+        "g1-29dof-loco", g1_checkpoint, extra_args=("--task.startup-state-timeout=3",)
+    )
+    assert not timed_out and code != 0, f"Policy exited with {code} (timed out: {timed_out}). Output: {output}"
+    assert "No valid robot state within 3s" in output, output
+    assert "Sent first native command" not in output, output
+    assert "RL FPS:" not in output, output
+
+
+@pytest.mark.requires_inference
+def test_run_policy_fails_when_the_robot_state_becomes_invalid(g1_checkpoint: str):
+    """Control: an invalid state after startup is an inference failure, not a wait."""
+    with low_state_publisher("g1-29dof-loco", invalid_after=5):
+        code, output, timed_out = run_policy_with_hsinference("g1-29dof-loco", g1_checkpoint)
+    assert not timed_out and code != 0, f"Policy exited with {code} (timed out: {timed_out}). Output: {output}"
+    assert "Sent first native command" in output, output
+    assert "Robot orientation must be nonzero" in output, output
